@@ -1,4 +1,4 @@
-import htcondor
+import htcondor2 as htcondor
 
 def get_condor_job_status(cluster_id: int, proc_id: int) -> str:
     """

@@ -6,22 +6,30 @@ from pathlib import Path
 import yaml
 import pandas as pd
 from reanalyze.utils import get_condor_job_status
+from waveformtools.waveformtools import message
+from tqdm import tqdm
 
 class PERerun:
 
     def __init__(self,
                  working_dir,
                  project_dir,
-                 apx='NRSur7dq4'):
+                 apx='NRSur7dq4',
+                 approvals={}):
 
         self.working_dir = Path(working_dir)
         self.project_dir = Path(project_dir)
         self.apx = apx
+        self.approvals=approvals
+
+        if not os.path.exists(self.project_dir):
+            os.makedirs(self.project_dir)
 
         self.submitted_jobs_list_file = self.project_dir/"submitted_jobs.txt"
         
         if not os.path.isfile(self.submitted_jobs_list_file):
             self.load=False
+
             with open(self.submitted_jobs_list_file, "w") as file:
                 pass
     
@@ -47,12 +55,16 @@ class PERerun:
     def find_bilby_configs(self,  
                           ):
         
-        command = f'find {self.working_dir} -type f -name "*{self.apx}*.ini" '
+
+        message("Running find...", message_verbosity=2)
+        print("Running find")
+        command = f'find {self.working_dir} -type f -iname "*{self.apx}*.ini" '
         output = self.run_cmd(command, shell=True, capture_output=True, text=True)
         files = output.stdout.split('\n')[:-1]
         event_dict = {}
         events = []
 
+        message("Parsing event names", message_verbosity=2)
         for item in files:
             event_files = []
             event_name = item.split('/')[5]
@@ -63,11 +75,24 @@ class PERerun:
         event_sdict = {}
         event_dict = {}
 
-        for event in events:
-            event_files = sorted([item for item in files if event in item])
-            event_dict.update({event: event_files[0]})
-            event_sdict.update({event: event_files})
+        message("Finding configs", message_verbosity=2)
 
+        for idx, event in tqdm(enumerate(events)):
+            event_files = sorted([item for item in files if event in item])
+
+            if event in self.approvals.keys():
+                tfile = self.approvals[event]
+                fil_files = [item for item in event_files if tfile in item]
+                if len(fil_files)>1:
+                    message(f"Found {len(fil_files)} approved files for {event}", message_verbosity=2)
+                event_file = fil_files[0]
+
+                message(f"Choosing {event_file} for {event}", message_verbosity=2)
+            else:
+                event_file = event_files[0]
+
+            event_dict.update({event: event_file})
+            event_sdict.update({event: event_files})
 
         return event_dict
 
@@ -143,8 +168,6 @@ class PERerun:
         out = self.run_cmd(command, shell=True,  capture_output=True, text=True)
         command = f"sed -i '/^additional-transfer-paths=/c\\additional-transfer-paths=[\/scratch\/lalsimulation/NRSur7dq4_v1.0.h5]' {config_path}"
         out = self.run_cmd(command, shell=True,  capture_output=True, text=True)
-        
-
 
         cmd = [
             "sed", "-Ei",
@@ -171,7 +194,9 @@ class PERerun:
                         working_dir="/home/pe.o4/GWTC4/working", 
                         apx='NRSur7dq4'):
 
+        message("Running find configs", message_verbosity=2)
         self.source_dict = self.find_bilby_configs()
+        message("Copying inis", message_verbosity=2)
         outs, config_paths = self.copy_inis()
         self.config_paths = config_paths
 
