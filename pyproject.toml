@@ -1,0 +1,32 @@
+[project]
+name = "purohit"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+  # ONLY list packages that actually exist on PyPI here
+  "pandas>=3.0.3,<4",
+  "tqdm>=4.67.3,<5",
+  "waveformtools>=2026.3.3.3,<2027",
+  "vlconf>=2025.9.11,<2026",
+  "htcondor>=25.10.1,<26; platform_system != 'Darwin' or platform_machine != 'arm64'",
+]
+
+[tool.pixi.workspace]
+channels = ["conda-forge"]
+platforms = ["osx-arm64", "linux-64"]
+
+[tool.pixi.dependencies]
+# List the Conda-only packages HERE. 
+# Pixi will install them, but pip will ignore this entire section.
+pyfftw = "*"
+htcondor = ">=25.10.1,<26"
+bilby_pipe = ">=1.0.4,<2"
+
+[tool.pixi.pypi-dependencies]
+purohit = { path = ".", editable = true }
+
+[tool.pixi.feature.dev.dependencies]
+ipython = "*"
+
+[tool.pixi.environments]
+default = { features = ["dev"], solve-group = "default" }

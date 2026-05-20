@@ -1,11 +1,11 @@
-import numpy as np
+# import numpy as np
 import subprocess
 import os
 from subprocess import PIPE, run as sprun
 from pathlib import Path
 import yaml
 import pandas as pd
-from reanalyze.utils import get_condor_job_status
+from .utils import get_condor_job_status
 from waveformtools.waveformtools import message
 from tqdm import tqdm
 import shutil, getpass

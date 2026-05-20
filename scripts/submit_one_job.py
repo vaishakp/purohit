@@ -1,5 +1,5 @@
 import numpy as np
-from reanalyze.reanalyze import PERerun
+from purohit.reanalyze import PERerun
 
 pe = PERerun(project_dir="/home/vaishak.prasad/Projects/ligo/rean",
              working_dir="/home/pe.o4/GWTC4/working",)
