@@ -26,6 +26,8 @@ class PERerun:
         if not os.path.exists(self.project_dir):
             os.makedirs(self.project_dir)
 
+        os.chdir(self.project_dir)
+
         self.submitted_jobs_list_file = self.project_dir/"submitted_jobs.txt"
         
         if not os.path.isfile(self.submitted_jobs_list_file):
