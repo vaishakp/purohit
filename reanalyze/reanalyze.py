@@ -92,10 +92,10 @@ class PERerun:
         if self.verbose:
             print(f"[purohit] {level}: {message_text}")
 
-    def _progress(self, iterable, *, desc, total=None):
+    def _progress(self, iterable, *, desc, total=None, unit="it"):
         """Wrap an iterable in tqdm when progress bars are enabled."""
 
-        return tqdm(iterable, desc=desc, total=total, disable=not self.progress)
+        return tqdm(iterable, desc=desc, total=total, unit=unit, disable=not self.progress)
 
     def event_dir(self, event):
         """Return the project-local working directory for an event."""
@@ -125,6 +125,56 @@ class PERerun:
 
         return out
 
+    def _scan_matching_ini_files(self):
+        """Scan ``working_dir`` for matching INI files with live config/event counters."""
+
+        apx_lower = self.apx.lower()
+        files = []
+        event_names = set()
+        scanned = 0
+        matched = 0
+        last_reported_match_count = 0
+        last_reported_event_count = 0
+
+        scan_iter = self.working_dir.rglob("*.ini")
+        if self.progress:
+            scan_iter = tqdm(scan_iter, desc="Scanning INI files", unit="file")
+
+        for path in scan_iter:
+            scanned += 1
+            if apx_lower in path.name.lower():
+                matched += 1
+                files.append(path)
+
+                rel_path = path.relative_to(self.working_dir)
+                if rel_path.parts:
+                    event_names.add(rel_path.parts[0])
+
+            if self.progress:
+                scan_iter.set_postfix(
+                    scanned=scanned,
+                    configs=matched,
+                    events=len(event_names),
+                    refresh=True,
+                )
+            elif self.verbose and (
+                matched >= last_reported_match_count + 25
+                or len(event_names) >= last_reported_event_count + 10
+            ):
+                last_reported_match_count = matched
+                last_reported_event_count = len(event_names)
+                self._log(
+                    f"Config scan progress: {matched} matching config(s), "
+                    f"{len(event_names)} event(s), {scanned} INI file(s) scanned"
+                )
+
+        files = sorted(files)
+        self._log(
+            f"Config scan complete: scanned {scanned} INI file(s), "
+            f"found {matched} matching config(s), discovered {len(event_names)} event(s)"
+        )
+        return files
+
     def find_bilby_configs(self):
         """Discover one source bilby_pipe INI file per event.
 
@@ -146,11 +196,7 @@ class PERerun:
         if not self.working_dir.is_dir():
             raise FileNotFoundError(f"working_dir does not exist or is not a directory: {self.working_dir}")
 
-        apx_lower = self.apx.lower()
-        files = sorted(
-            path for path in self.working_dir.rglob("*.ini")
-            if apx_lower in path.name.lower()
-        )
+        files = self._scan_matching_ini_files()
 
         if not files:
             raise FileNotFoundError(
