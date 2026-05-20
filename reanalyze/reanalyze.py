@@ -1,3 +1,11 @@
+"""Utilities for preparing and resubmitting bilby_pipe parameter-estimation jobs.
+
+The :class:`PERerun` workflow copies pre-generated bilby_pipe INI files into a
+project-local working area, edits selected configuration entries, submits jobs to
+HTCondor through ``bilby_pipe --submit``, and keeps a small ledger of submitted
+jobs and their most recent status.
+"""
+
 import os
 import re
 import subprocess
@@ -15,6 +23,29 @@ from waveformtools.waveformtools import message
 
 
 class PERerun:
+    """Prepare, reconfigure, submit, and monitor bilby_pipe reruns.
+
+    Parameters
+    ----------
+    working_dir : str or pathlib.Path
+        Directory containing the original bilby_pipe working tree. Each event is
+        expected to live under a first-level subdirectory of this path.
+    project_dir : str or pathlib.Path
+        Local project directory where copied INI files, job ledgers, and status
+        files are stored.
+    apx : str, optional
+        Waveform/approximant token used to discover matching INI files. Matching
+        is case-insensitive and is applied to the INI file name.
+    approvals : dict[str, str] or None, optional
+        Optional mapping from event name to a substring that selects the approved
+        config file when multiple matching INI files exist for that event.
+
+    Notes
+    -----
+    The class changes the current working directory to ``project_dir`` during
+    initialization because bilby_pipe submission can be sensitive to the current
+    directory relative to the configured output directory.
+    """
 
     def __init__(self,
                  working_dir,
@@ -40,6 +71,7 @@ class PERerun:
             self.submitted_jobs_list_file.touch()
 
     def event_dir(self, event):
+        """Return the project-local working directory for an event."""
         return Path(os.path.dirname(self.config_paths[event]))
 
     def run_cmd(self,
@@ -48,6 +80,11 @@ class PERerun:
             capture_output=True,
             check=True,
             text=True):
+        """Run a shell or subprocess command and re-raise failures verbosely.
+
+        Parameters mirror :func:`subprocess.run`. On failure, stdout/stderr are
+        printed before the original ``CalledProcessError`` is re-raised.
+        """
 
         try:
             out = subprocess.run(command, shell=shell, capture_output=capture_output, check=check, text=text)
@@ -63,6 +100,20 @@ class PERerun:
         return out
 
     def find_bilby_configs(self):
+        """Discover one source bilby_pipe INI file per event.
+
+        Returns
+        -------
+        dict[str, str]
+            Mapping from event name to selected source INI path.
+
+        Raises
+        ------
+        FileNotFoundError
+            If ``working_dir`` is missing or no matching INI files are found.
+        ValueError
+            If an approval token is supplied but matches no files for an event.
+        """
 
         message("Running find...", message_verbosity=2)
         print("Running find")
@@ -119,6 +170,14 @@ class PERerun:
         return event_dict
 
     def copy_inis(self):
+        """Copy selected source INI files into ``project_dir/working/<event>``.
+
+        Returns
+        -------
+        tuple[dict[str, str], dict[str, pathlib.Path]]
+            The first item records copied destination paths for fresh projects.
+            The second maps event names to project-local INI paths.
+        """
 
         all_outs = {}
         config_paths = {}
@@ -147,15 +206,13 @@ class PERerun:
         return all_outs, config_paths
 
     def reconfigure_one_ini(self, event):
-        ''' reconfigure one ini
+        """Edit one copied bilby_pipe INI for resubmission.
 
-            Changes:
-            1. label
-            2. outdir
-            3. webdir
-            4. accounting user
-            5. Priors
-            '''
+        The current implementation updates the label, accounting user, output
+        directory, web directory, resource requests, analysis executable,
+        submission backend, selected spin priors, and sampler kwargs. For
+        ``NRSur7dq4`` runs it also writes the NRSur7dq4 HDF5 transfer path.
+        """
 
         to_change = ["label",
                     "accounting-user",
@@ -224,6 +281,12 @@ class PERerun:
     def prepare_configs(self,
                         working_dir="/home/pe.o4/GWTC4/working",
                         apx='NRSur7dq4'):
+        """Discover source configs and copy them into the local project tree.
+
+        The ``working_dir`` and ``apx`` arguments are retained for backward
+        compatibility but are not currently used; the object attributes set at
+        initialization determine the search path and approximant token.
+        """
 
         message("Running find configs", message_verbosity=2)
         self.source_dict = self.find_bilby_configs()
@@ -232,11 +295,17 @@ class PERerun:
         self.config_paths = config_paths
 
     def reconfigure(self):
+        """Reconfigure copied INI files for a fresh project.
+
+        Existing projects are treated as resume operations and are not
+        reconfigured automatically.
+        """
         if not self.resume:
             for event, config_path in self.config_paths.items():
                 self.reconfigure_one_ini(event)
 
     def read_job_status(self, event):
+        """Read the persisted status and Condor cluster id for one event."""
 
         job_file = Path(os.path.dirname(self.config_paths[event])) / "status.yaml"
 
@@ -254,6 +323,11 @@ class PERerun:
         return status, jobid
 
     def all_job_status(self):
+        """Query all configured jobs and return a status DataFrame.
+
+        The most recent queried status is also persisted back to each event's
+        ``status.yaml`` file.
+        """
 
         status_dict = {}
         for key in self.config_paths.keys():
@@ -271,12 +345,14 @@ class PERerun:
         return df
 
     def add_to_submitted_jobs_list(self, event):
+        """Append an event name to ``submitted_jobs.txt``."""
 
         with open(self.submitted_jobs_list_file, "a") as file:
         # This writes the list of strings to the file.
             file.write(f"{event}\n")
 
     def parse_submitted_jobs_list(self):
+        """Load submitted and pending event lists from the local ledger."""
 
         with open(self.submitted_jobs_list_file, "r") as file:
         # This writes the list of strings to the file.
@@ -288,6 +364,13 @@ class PERerun:
         return sub_jobs
 
     def query_job_status(self, event, jobid):
+        """Return the best available status for one event.
+
+        Pending jobs are reported directly from the local ledger. Submitted jobs
+        are queried from HTCondor when a cluster id is available; if the job is
+        no longer in the queue, completion is inferred from the final-result
+        directory.
+        """
         self.parse_submitted_jobs_list()
 
         if event not in self.submitted_jobs:
@@ -304,6 +387,7 @@ class PERerun:
         return status
 
     def update_job_status_file(self, event, info):
+        """Merge ``info`` into an event's ``status.yaml`` file."""
         job_file = Path(os.path.dirname(self.config_paths[event])) / "status.yaml"
 
         if not os.path.isfile(job_file):
@@ -319,6 +403,7 @@ class PERerun:
             yaml.safe_dump(status, file, sort_keys=False)
 
     def check_for_completion(self, event):
+        """Infer completion from files in ``pe/final_result`` for an event."""
 
         final_results_dir = self.event_dir(event) / "pe/final_result"
         if not final_results_dir.is_dir():
@@ -338,12 +423,19 @@ class PERerun:
         return status
 
     def _parse_jobid_from_bilby_pipe_stdout(self, stdout):
+        """Extract a Condor cluster id from bilby_pipe submission output."""
         match = re.search(r"\b(\d+)(?:\.\d+)?\b", stdout)
         if match is None:
             raise RuntimeError(f"Could not parse Condor cluster id from bilby_pipe output:\n{stdout}")
         return match.group(1)
 
     def submit_one_job(self, event):
+        """Submit one pending event through ``bilby_pipe --submit``.
+
+        Returns the ``subprocess.CompletedProcess`` object for new submissions;
+        returns ``None`` if the event is already present in the submitted-jobs
+        ledger.
+        """
 
         self.parse_submitted_jobs_list()
         if event not in self.submitted_jobs:
@@ -361,6 +453,7 @@ class PERerun:
             return None
 
     def submit_next_job(self):
+        """Submit the first pending event, if one is available."""
 
         self.parse_submitted_jobs_list()
 
@@ -374,6 +467,18 @@ class PERerun:
         return out
 
     def submit_jobs(self, njobs=1):
+        """Submit up to ``njobs`` pending events.
+
+        Parameters
+        ----------
+        njobs : int, optional
+            Maximum number of pending jobs to submit.
+
+        Returns
+        -------
+        list[subprocess.CompletedProcess | None]
+            Submission results for the attempted events.
+        """
 
         self.parse_submitted_jobs_list()
 
@@ -391,10 +496,12 @@ class PERerun:
         return outs
 
     def load(self):
+        """Discover source config files without copying or submitting jobs."""
         self.source_dict = self.find_bilby_configs()
         return self.source_dict
 
     def run(self):
+        """Run the full prepare, reconfigure, ledger-load, and status-query flow."""
 
         self.prepare_configs()
         self.reconfigure()
