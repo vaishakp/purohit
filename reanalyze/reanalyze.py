@@ -424,10 +424,15 @@ class PERerun:
 
     def _parse_jobid_from_bilby_pipe_stdout(self, stdout):
         """Extract a Condor cluster id from bilby_pipe submission output."""
-        match = re.search(r"\b(\d+)(?:\.\d+)?\b", stdout)
-        if match is None:
-            raise RuntimeError(f"Could not parse Condor cluster id from bilby_pipe output:\n{stdout}")
-        return match.group(1)
+        cluster_match = re.search(r"cluster\s+(\d+)(?:\.\d+)?", stdout, re.IGNORECASE)
+        if cluster_match is not None:
+            return cluster_match.group(1)
+
+        matches = re.findall(r"\b(\d+)(?:\.\d+)?\b", stdout)
+        if matches:
+            return matches[-1]
+
+        raise RuntimeError(f"Could not parse Condor cluster id from bilby_pipe output:\n{stdout}")
 
     def submit_one_job(self, event):
         """Submit one pending event through ``bilby_pipe --submit``.

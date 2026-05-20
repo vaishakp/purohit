@@ -85,7 +85,7 @@ def test_copy_inis_copies_on_fresh_project(tmp_path):
 
     dest = project_dir / "working" / "S240001a" / source.name
     assert config_paths == {"S240001a": dest}
-    assert copied == {"S240001a": str(dest)}
+    assert Path(copied["S240001a"]) == dest
     assert dest.read_text() == source.read_text()
 
 
@@ -153,6 +153,14 @@ def test_submit_jobs_rejects_negative_njobs(tmp_path):
 
     with pytest.raises(ValueError, match="njobs must be non-negative"):
         rerun.submit_jobs(-1)
+
+
+def test_parse_jobid_prefers_condor_cluster_id(tmp_path):
+    rerun = PERerun(working_dir=tmp_path / "working", project_dir=tmp_path / "project")
+
+    assert rerun._parse_jobid_from_bilby_pipe_stdout(
+        "Submitting job\n1 job(s) submitted to cluster 12345.\n"
+    ) == "12345"
 
 
 def test_submit_one_job_records_jobid_and_status(tmp_path, monkeypatch):
