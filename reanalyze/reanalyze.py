@@ -38,7 +38,9 @@ class PERerun:
         is case-insensitive and is applied to the INI file name.
     approvals : dict[str, str] or None, optional
         Optional mapping from event name to a substring that selects the approved
-        config file when multiple matching INI files exist for that event.
+        config file when multiple matching INI files exist for that event. If an
+        approval token matches no files for an event, the selector warns and
+        falls back to the last sorted available config for that event.
     overwrite_configs : bool, optional
         If true, overwrite existing copied INI files during config preparation.
     verbose : bool, optional
@@ -187,8 +189,6 @@ class PERerun:
         ------
         FileNotFoundError
             If ``working_dir`` is missing or no matching INI files are found.
-        ValueError
-            If an approval token is supplied but matches no files for an event.
         """
 
         self._log(f"Searching for bilby_pipe INI files matching '*{self.apx}*.ini' under {self.working_dir}")
@@ -224,14 +224,18 @@ class PERerun:
                 tfile = self.approvals[event]
                 fil_files = [item for item in event_files if tfile in item]
                 if not fil_files:
-                    raise ValueError(
-                        f"No approved config file for event {event!r} matched approval token {tfile!r}. "
-                        f"Available files: {event_files}"
+                    event_file = event_files[-1]
+                    self._log(
+                        f"Event {event}: approval token {tfile!r} matched no configs; "
+                        f"falling back to last sorted available config {event_file}. "
+                        f"Available files: {event_files}",
+                        level="WARNING",
                     )
-                if len(fil_files) > 1:
-                    self._log(f"Event {event}: approval token matched {len(fil_files)} files; using first sorted match", level="WARNING")
-                event_file = fil_files[0]
-                self._log(f"Event {event}: selected approved config {event_file}", level="DEBUG")
+                else:
+                    if len(fil_files) > 1:
+                        self._log(f"Event {event}: approval token matched {len(fil_files)} files; using first sorted match", level="WARNING")
+                    event_file = fil_files[0]
+                    self._log(f"Event {event}: selected approved config {event_file}", level="DEBUG")
             else:
                 event_file = event_files[0]
                 self._log(f"Event {event}: selected config {event_file}", level="DEBUG")
