@@ -1,0 +1,10 @@
+name: purohit
+channels:
+  - conda-forge
+dependencies:
+  - python>=3.9
+  - numpy
+  - pandas
+  - pyyaml
+  - tqdm
+  - pip

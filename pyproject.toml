@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "purohit"
+version = "0.1.0"
+description = "Utilities for preparing, submitting, and monitoring bilby_pipe reruns"
+requires-python = ">=3.9"
+dependencies = [
+  "numpy",
+  "pandas",
+  "PyYAML",
+  "tqdm",
+  "waveformtools",
+]
+
+[project.optional-dependencies]
+condor = [
+  "htcondor",
+]
+dev = [
+  "pytest",
+  "ipython",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["reanalyze*"]
+exclude = ["nbs*", "scripts*", "tests*"]
