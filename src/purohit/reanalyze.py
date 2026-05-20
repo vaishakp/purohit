@@ -327,9 +327,10 @@ class PERerun:
             jobid = stdout.split("\n")[1].split(" ")[-1][:-1]
             self.add_to_submitted_jobs_list(event)
             self.update_job_status_file(event, {"jobid": jobid})
+            print(f"Submitted {event} with jobid {jobid}")
+            return out
         else:
             print(f"Job {event} previosly submitted")
-        return out
 
     def submit_next_job(self):
 
