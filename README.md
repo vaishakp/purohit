@@ -29,3 +29,7 @@ python -m pip install -e .
 ```
 
 Some deployment-specific dependencies, such as HTCondor and `bilby_pipe`, are expected to be installed in the target LIGO/HTCondor environment when needed.
+
+## Acknowledgements
+
+The packaging work in this branch builds on the packaging effort proposed by @chungyinleo in #8, while preserving the existing `reanalyze/` source layout.
