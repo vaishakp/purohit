@@ -21,7 +21,13 @@ import yaml
 
 from reanalyze.static_monitor import publish_once
 
-SUPPORTED_ACTIONS = {"submit_event", "hold_event", "release_event", "remove_event", "refresh"}
+SUPPORTED_ACTIONS = {"submit_event", "hold_event", "release_event", "remove_event", "reset_event", "refresh"}
+RESETTABLE_OUTPUT_DIRS = ("pe",)
+RESETTABLE_PATTERNS = (
+    "*.dag.*",
+    "*.rescue*",
+    "*.lock",
+)
 
 
 def read_json(path: Path) -> dict[str, Any]:
@@ -91,6 +97,20 @@ def append_submitted(project_dir: Path, event: str) -> None:
             handle.write(f"{event}\n")
 
 
+def remove_submitted(project_dir: Path, event: str) -> bool:
+    ledger = project_dir / "submitted_jobs.txt"
+    if not ledger.is_file():
+        return False
+    entries = submitted_jobs(project_dir)
+    filtered = [item for item in entries if item != event]
+    if filtered == entries:
+        return False
+    backup = ledger.with_name(f"{ledger.name}.bak.{time.strftime('%Y%m%d-%H%M%S')}")
+    shutil.copy2(ledger, backup)
+    ledger.write_text("".join(f"{item}\n" for item in filtered))
+    return True
+
+
 def parse_cluster_id(stdout: str) -> str:
     import re
 
@@ -158,6 +178,58 @@ def remove_event(project_dir: Path, event: str) -> dict[str, Any]:
     return {"ok": True, "event": event, "jobid": jobid, "stdout": out.stdout}
 
 
+def _safe_remove_path(path: Path, event_directory: Path) -> str | None:
+    resolved = path.resolve()
+    event_resolved = event_directory.resolve()
+    if resolved == event_resolved or event_resolved not in resolved.parents:
+        raise ValueError(f"Refusing to remove path outside event directory: {path}")
+    if not path.exists():
+        return None
+    if path.is_dir():
+        shutil.rmtree(path)
+    else:
+        path.unlink()
+    return str(path)
+
+
+def reset_event(project_dir: Path, event: str) -> dict[str, Any]:
+    edir = event_dir(project_dir, event)
+    if not edir.is_dir():
+        raise FileNotFoundError(f"Event directory does not exist: {edir}")
+
+    removed_paths: list[str] = []
+    for name in RESETTABLE_OUTPUT_DIRS:
+        removed = _safe_remove_path(edir / name, edir)
+        if removed:
+            removed_paths.append(removed)
+    for pattern in RESETTABLE_PATTERNS:
+        for path in sorted(edir.glob(pattern)):
+            removed = _safe_remove_path(path, edir)
+            if removed:
+                removed_paths.append(removed)
+
+    ledger_changed = remove_submitted(project_dir, event)
+    status_path = edir / "status.yaml"
+    status = read_yaml(status_path)
+    previous_jobid = status.pop("jobid", None)
+    status.update({
+        "status": "pending",
+        "note": "Reset by static manager; ready for fresh web submission",
+        "reset_at": time.time(),
+        "previous_jobid": previous_jobid,
+    })
+    status_path.write_text(yaml.safe_dump(status, sort_keys=False))
+    return {
+        "ok": True,
+        "event": event,
+        "status": "pending",
+        "removed_from_submitted_jobs": ledger_changed,
+        "previous_jobid": previous_jobid,
+        "removed_paths": removed_paths,
+        "message": "event reset; click Submit to submit a fresh job",
+    }
+
+
 def process_command(project_dir: Path, command: dict[str, Any]) -> dict[str, Any]:
     action = command.get("action")
     event = command.get("event")
@@ -176,6 +248,8 @@ def process_command(project_dir: Path, command: dict[str, Any]) -> dict[str, Any
             result = release_event(project_dir, event)
         elif action == "remove_event":
             result = remove_event(project_dir, event)
+        elif action == "reset_event":
+            result = reset_event(project_dir, event)
         else:  # pragma: no cover - guarded by SUPPORTED_ACTIONS
             result = {"ok": False, "message": f"unhandled action {action}"}
     except Exception as exc:  # noqa: BLE001 - operational command audit should record failures
