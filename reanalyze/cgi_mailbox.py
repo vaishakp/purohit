@@ -29,7 +29,7 @@ import time
 from typing import Any
 from urllib.parse import parse_qs
 
-VALID_ACTIONS = {"submit_event", "hold_event", "release_event", "remove_event", "refresh"}
+VALID_ACTIONS = {"submit_event", "hold_event", "release_event", "remove_event", "reset_event", "refresh"}
 DEFAULT_SPOOL_ROOT = Path("/var/tmp")
 DEFAULT_MAILBOX_NAME = "purohit-mailbox"
 
