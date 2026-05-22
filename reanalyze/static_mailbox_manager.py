@@ -17,6 +17,7 @@ from typing import Any
 from urllib import request
 from urllib.error import HTTPError, URLError
 
+from reanalyze.manager_health import build_health_payload, publish_health_files, sanitize_command_result
 from reanalyze.static_manager import append_audit, process_command
 from reanalyze.static_monitor import publish_once
 
@@ -43,6 +44,7 @@ CONTROL_HTML = """<!doctype html>
 <body>
   <h1>Purohit command controls</h1>
   <p class="muted">This page POSTs commands to the CGI mailbox endpoint. The static manager on the submit host drains the mailbox and executes commands on its next polling pass.</p>
+  <p><a href="health.html">Manager health diagnostics</a></p>
   <div id="lb-warning" class="card warn"></div>
   <div class="card">
     <div><strong>Mailbox URL:</strong> <code id="mailbox-url">loading...</code></div>
@@ -91,6 +93,7 @@ async function sendCommand(action, event) {
     const data = await response.json();
     if (!response.ok || !data.ok) throw new Error(data.error || `HTTP ${response.status}`);
     if (data.cgi_host) localStorage.setItem("purohit_last_enqueue_host", data.cgi_host);
+    if (data.queued && data.queued.id) localStorage.setItem("purohit_last_command_id", data.queued.id);
     result.textContent = `Queued ${action} for ${event} on ${data.cgi_host || "unknown CGI host"}. The manager will execute it on the next polling pass.`;
     updateLoadBalanceWarning();
   } catch (err) {
@@ -225,6 +228,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--webdir", required=True, type=Path)
     parser.add_argument("--mailbox-url", required=True, help="CGI mailbox endpoint URL, e.g. https://.../purohit_mailbox.cgi")
     parser.add_argument("--token-file", type=Path, default=None, help="Optional local token file also accepted by CGI.")
+    parser.add_argument("--env-mode", choices=["names", "redacted", "full"], default="redacted", help="Environment variables shown on health.html. Use full only for private/non-public webdirs.")
+    parser.add_argument("--command-result-tail", type=int, default=100, help="Number of recent command results to publish.")
     parser.add_argument("--mailbox-status-probes", type=int, default=3, help="Number of CGI status probes per manager cycle for load-balancing detection.")
     parser.add_argument("--interval", type=int, default=60)
     parser.add_argument("--plot-interval", type=int, default=300)
@@ -240,27 +245,66 @@ def main() -> None:
     project_dir = args.project_dir.expanduser().resolve()
     webdir = args.webdir.expanduser().resolve()
     token = args.token_file.expanduser().read_text().strip() if args.token_file and args.token_file.is_file() else None
+    manager_started_at = time.time()
+    last_cycle_at: float | None = None
+    last_cycle_duration_s: float | None = None
     last_plot_publish = 0.0
+    recent_command_results: list[dict[str, Any]] = []
+    last_error: str | None = None
     while True:
-        probe_metadata = probe_mailbox_hosts(args.mailbox_url, token=token, probes=args.mailbox_status_probes)
-        results, drain_metadata = process_remote_commands(project_dir, args.mailbox_url, token=token)
-        mailbox_metadata = build_mailbox_metadata(drain_metadata, probe_metadata)
-        now = time.time()
-        copy_outputs = now - last_plot_publish >= args.plot_interval
-        payload = publish_once(
-            project_dir,
-            webdir,
-            include_history=not args.no_history,
-            heartbeat_filename=args.heartbeat_filename,
-            copy_outputs=copy_outputs,
-            command_file=None,
-            max_artifacts_per_event=args.max_artifacts_per_event,
-        )
-        publish_control_page(webdir, args.mailbox_url, mailbox_metadata=mailbox_metadata)
-        if copy_outputs:
-            last_plot_publish = now
-        warning = " LOAD-BALANCING-DETECTED" if mailbox_metadata["load_balancing_detected"] else ""
-        print(f"Drained {len(results)} command(s); published {len(payload['jobs'])} jobs to {webdir} at {time.strftime('%Y-%m-%d %H:%M:%S')}{warning}")
+        cycle_start = time.time()
+        mailbox_metadata: dict[str, Any] = {}
+        try:
+            probe_metadata = probe_mailbox_hosts(args.mailbox_url, token=token, probes=args.mailbox_status_probes)
+            results, drain_metadata = process_remote_commands(project_dir, args.mailbox_url, token=token)
+            mailbox_metadata = build_mailbox_metadata(drain_metadata, probe_metadata)
+            recent_command_results.extend(sanitize_command_result(result) for result in results)
+            if args.command_result_tail > 0:
+                recent_command_results = recent_command_results[-args.command_result_tail :]
+            now = time.time()
+            copy_outputs = now - last_plot_publish >= args.plot_interval
+            payload = publish_once(
+                project_dir,
+                webdir,
+                include_history=not args.no_history,
+                heartbeat_filename=args.heartbeat_filename,
+                copy_outputs=copy_outputs,
+                command_file=None,
+                max_artifacts_per_event=args.max_artifacts_per_event,
+            )
+            publish_control_page(webdir, args.mailbox_url, mailbox_metadata=mailbox_metadata)
+            if copy_outputs:
+                last_plot_publish = now
+            last_error = None
+            warning = " LOAD-BALANCING-DETECTED" if mailbox_metadata["load_balancing_detected"] else ""
+            print(f"Drained {len(results)} command(s); published {len(payload['jobs'])} jobs to {webdir} at {time.strftime('%Y-%m-%d %H:%M:%S')}{warning}")
+        except Exception as exc:  # noqa: BLE001 - long-running monitor should publish health even on failures
+            last_error = str(exc)
+            print(f"Manager cycle failed: {last_error}")
+        finally:
+            last_cycle_at = time.time()
+            last_cycle_duration_s = last_cycle_at - cycle_start
+            health_payload = build_health_payload(
+                project_dir=project_dir,
+                webdir=webdir,
+                manager_started_at=manager_started_at,
+                last_cycle_at=last_cycle_at,
+                last_cycle_duration_s=last_cycle_duration_s,
+                interval_s=args.interval,
+                plot_interval_s=args.plot_interval,
+                mailbox_metadata=mailbox_metadata,
+                last_artifact_publish_at=last_plot_publish if last_plot_publish else None,
+                command_results_count=len(recent_command_results),
+                env_mode=args.env_mode,
+                last_error=last_error,
+            )
+            publish_health_files(
+                webdir,
+                health_payload,
+                recent_command_results,
+                atomic_write_text=atomic_write_text,
+                atomic_write_json=atomic_write_json,
+            )
         if args.once:
             return
         time.sleep(args.interval)
