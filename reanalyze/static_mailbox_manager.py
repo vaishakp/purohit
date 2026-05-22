@@ -41,6 +41,7 @@ CONTROL_HTML = """<!doctype html>
     .btn:disabled { cursor: wait; opacity: 0.75; }
     .btn-primary { background: rgba(37,99,235,0.14); border-color: rgba(37,99,235,0.35); }
     .btn-danger { background: rgba(185,28,28,0.12); border-color: rgba(185,28,28,0.35); }
+    .btn-reset { background: rgba(146,64,14,0.12); border-color: rgba(146,64,14,0.35); }
     .btn-pending { background: rgba(146,64,14,0.18); border-color: rgba(146,64,14,0.55); }
     .btn-success { background: rgba(4,120,87,0.20); border-color: rgba(4,120,87,0.70); color: #047857; font-weight: 700; }
     .btn-error { background: rgba(185,28,28,0.18); border-color: rgba(185,28,28,0.70); color: #b91c1c; font-weight: 700; }
@@ -118,7 +119,7 @@ function saveToken(button) {
   restoreButton(button);
 }
 function controls(event) {
-  return `<button class="btn btn-primary" onclick="sendCommand(this,'submit_event','${event}')">Submit</button><button class="btn" onclick="sendCommand(this,'hold_event','${event}')">Hold</button><button class="btn" onclick="sendCommand(this,'release_event','${event}')">Release</button><button class="btn btn-danger" onclick="sendCommand(this,'remove_event','${event}')">Remove</button>`;
+  return `<button class="btn btn-primary" onclick="sendCommand(this,'submit_event','${event}')">Submit</button><button class="btn" onclick="sendCommand(this,'hold_event','${event}')">Hold</button><button class="btn" onclick="sendCommand(this,'release_event','${event}')">Release</button><button class="btn btn-danger" onclick="sendCommand(this,'remove_event','${event}')">Remove</button><button class="btn btn-reset" onclick="sendCommand(this,'reset_event','${event}')">Reset</button>`;
 }
 function updateLoadBalanceWarning() {
   const warning = document.getElementById("lb-warning");
@@ -145,6 +146,7 @@ async function sendCommand(button, action, event) {
     return;
   }
   if (action === "remove_event" && !confirm(`Remove ${event}?`)) return;
+  if (action === "reset_event" && !confirm(`Reset ${event}? This clears the submitted ledger entry, resets status.yaml, and removes the event pe directory if present. It does not automatically submit a new job.`)) return;
   const token = localStorage.getItem("purohit_mailbox_token") || document.getElementById("token").value || "";
   setButtonState(button, "pending", "Queueing…");
   setStatus(`Queueing ${action} for ${event}...`, "pending");
