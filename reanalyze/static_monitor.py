@@ -26,16 +26,29 @@ except ImportError:  # pragma: no cover - optional dependency
 
 
 CONDOR_STATUS = {1: "idle", 2: "running", 3: "completed", 4: "removed", 5: "held", 6: "suspended"}
+CONDOR_RESOURCE_ATTRIBUTES = [
+    "DiskUsage",
+    "ImageSize",
+    "ResidentSetSize",
+    "MemoryUsage",
+    "ProportionalSetSizeKb",
+    "RemoteUserCpu",
+    "RemoteSysCpu",
+    "CumulativeRemoteUserCpu",
+    "CumulativeRemoteSysCpu",
+    "CpusUsage",
+    "CommittedTime",
+]
 CONDOR_ATTRIBUTES = ",".join([
     "ClusterId", "ProcId", "JobStatus", "RequestCpus", "RequestMemory", "RemoteHost",
     "RemoteWallClockTime", "JobCurrentStartDate", "EnteredCurrentStatus", "HoldReason",
-    "DiskUsage", "ImageSize", "ResidentSetSize", "MemoryUsage",
+    *CONDOR_RESOURCE_ATTRIBUTES,
 ])
 DAG_ATTRIBUTES = ",".join([
     "ClusterId", "ProcId", "JobStatus", "Owner", "BatchName", "DAGManJobId", "DAGParentNodeNames",
     "DAGNodeName", "RequestCpus", "RequestMemory", "RemoteHost", "RemoteWallClockTime",
-    "JobCurrentStartDate", "EnteredCurrentStatus", "HoldReason", "DiskUsage", "ImageSize",
-    "ResidentSetSize", "MemoryUsage", "Iwd", "Cmd", "Args", "Out", "Err", "Log",
+    "JobCurrentStartDate", "EnteredCurrentStatus", "HoldReason", "Iwd", "Cmd", "Args", "Out", "Err", "Log",
+    *CONDOR_RESOURCE_ATTRIBUTES,
 ])
 DEFAULT_OUTPUT_EXTENSIONS = (".png", ".jpg", ".jpeg", ".svg", ".pdf", ".html", ".txt", ".log", ".out", ".err", ".hdf5", ".json")
 
@@ -195,7 +208,7 @@ function outputTable(outputs) {{
 }}
 function jobTable(jobs) {{
   if (!jobs || jobs.length === 0) return "No DAG subjobs found in condor_q/condor_history.";
-  return `<table><thead><tr><th>Job ID</th><th>Status</th><th>Node</th><th>Remote host</th><th>Runtime</th><th>CPUs</th><th>Memory</th><th>Hold reason</th><th>Logs</th></tr></thead><tbody>${{jobs.map(j => `<tr><td>${{esc(j.job_id)}}</td><td class="${{statusClass(j.status)}}">${{esc(fmt(j.status))}}</td><td>${{esc(fmt(j.node))}}</td><td>${{esc(fmt(j.remote_host))}}</td><td>${{esc(fmt(j.runtime))}}</td><td>${{esc(fmt(j.request_cpus))}}</td><td>${{esc(fmt(j.request_memory_mb))}}</td><td>${{esc(fmt(j.hold_reason))}}</td><td><div>out: <code>${{esc(fmt(j.out))}}</code></div><div>err: <code>${{esc(fmt(j.err))}}</code></div><div>log: <code>${{esc(fmt(j.log))}}</code></div></td></tr>`).join("")}}</tbody></table>`;
+  return `<table><thead><tr><th>Job ID</th><th>Status</th><th>Node</th><th>Remote host</th><th>Wall time</th><th>CPU time</th><th>CPU eff.</th><th>Req. CPUs</th><th>Req. mem MB</th><th>Mem MB</th><th>RSS MB</th><th>Disk MB</th><th>Hold reason</th><th>Logs</th></tr></thead><tbody>${{jobs.map(j => `<tr><td>${{esc(j.job_id)}}</td><td class="${{statusClass(j.status)}}">${{esc(fmt(j.status))}}</td><td>${{esc(fmt(j.node))}}</td><td>${{esc(fmt(j.remote_host))}}</td><td>${{esc(fmt(j.runtime))}}</td><td>${{esc(fmt(j.cpu_time))}}</td><td>${{esc(fmt(j.cpu_efficiency_percent))}}</td><td>${{esc(fmt(j.request_cpus))}}</td><td>${{esc(fmt(j.request_memory_mb))}}</td><td>${{esc(fmt(j.memory_usage_mb))}}</td><td>${{esc(fmt(j.rss_mb))}}</td><td>${{esc(fmt(j.disk_usage_mb))}}</td><td>${{esc(fmt(j.hold_reason))}}</td><td><div>out: <code>${{esc(fmt(j.out))}}</code></div><div>err: <code>${{esc(fmt(j.err))}}</code></div><div>log: <code>${{esc(fmt(j.log))}}</code></div></td></tr>`).join("")}}</tbody></table>`;
 }}
 async function refresh() {{
   document.getElementById("title").textContent = `Purohit event detail: ${{EVENT}}`;
@@ -340,6 +353,25 @@ def condor_dag_ads(dag_cluster: int | None, *, include_history: bool = True) -> 
     return live, history
 
 
+def as_float(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def round_or_none(value: Any, digits: int = 2) -> float | None:
+    number = as_float(value)
+    return None if number is None else round(number, digits)
+
+
+def kb_to_mb(value: Any) -> float | None:
+    number = as_float(value)
+    return None if number is None else round(number / 1024.0, 2)
+
+
 def format_runtime(seconds: Any) -> str | None:
     if seconds is None:
         return None
@@ -398,16 +430,68 @@ def final_result_completed(event_dir: Path) -> bool:
     return final_result.is_dir() and any(path.suffix == ".hdf5" for path in final_result.iterdir())
 
 
-def job_row_from_ad(ad: dict[str, Any] | None, fallback_status: str) -> dict[str, Any]:
+def cpu_seconds_from_ad(ad: dict[str, Any]) -> float | None:
+    user = as_float(ad.get("RemoteUserCpu"))
+    sys_cpu = as_float(ad.get("RemoteSysCpu"))
+    cumulative_user = as_float(ad.get("CumulativeRemoteUserCpu"))
+    cumulative_sys = as_float(ad.get("CumulativeRemoteSysCpu"))
+    total = None
+    if user is not None or sys_cpu is not None:
+        total = (user or 0.0) + (sys_cpu or 0.0)
+    if total is None and (cumulative_user is not None or cumulative_sys is not None):
+        total = (cumulative_user or 0.0) + (cumulative_sys or 0.0)
+    return total
+
+
+def resource_usage_from_ad(ad: dict[str, Any] | None) -> dict[str, Any]:
     if ad is None:
-        return {"status": fallback_status, "request_cpus": None, "request_memory_mb": None, "remote_host": None, "runtime": None, "disk_usage": None, "rss_kb": None, "note": None}
-    return {"status": CONDOR_STATUS.get(ad.get("JobStatus"), fallback_status), "request_cpus": ad.get("RequestCpus"), "request_memory_mb": ad.get("RequestMemory"), "remote_host": ad.get("RemoteHost"), "runtime": format_runtime(ad.get("RemoteWallClockTime")), "disk_usage": ad.get("DiskUsage"), "rss_kb": ad.get("ResidentSetSize") or ad.get("ImageSize") or ad.get("MemoryUsage"), "note": ad.get("HoldReason")}
+        return {
+            "memory_usage_mb": None,
+            "rss_mb": None,
+            "image_size_mb": None,
+            "disk_usage_mb": None,
+            "remote_user_cpu_s": None,
+            "remote_sys_cpu_s": None,
+            "cpu_time_s": None,
+            "cpu_time": None,
+            "cpu_efficiency_percent": None,
+            "cpus_usage": None,
+        }
+    wall = as_float(ad.get("RemoteWallClockTime"))
+    cpu_time = cpu_seconds_from_ad(ad)
+    efficiency = None
+    if wall and wall > 0 and cpu_time is not None:
+        efficiency = round(100.0 * cpu_time / wall, 1)
+    return {
+        "memory_usage_mb": round_or_none(ad.get("MemoryUsage")),
+        "rss_mb": kb_to_mb(ad.get("ResidentSetSize")),
+        "image_size_mb": kb_to_mb(ad.get("ImageSize")),
+        "proportional_set_size_mb": kb_to_mb(ad.get("ProportionalSetSizeKb")),
+        "disk_usage_mb": kb_to_mb(ad.get("DiskUsage")),
+        "remote_user_cpu_s": round_or_none(ad.get("RemoteUserCpu")),
+        "remote_sys_cpu_s": round_or_none(ad.get("RemoteSysCpu")),
+        "cumulative_remote_user_cpu_s": round_or_none(ad.get("CumulativeRemoteUserCpu")),
+        "cumulative_remote_sys_cpu_s": round_or_none(ad.get("CumulativeRemoteSysCpu")),
+        "cpu_time_s": None if cpu_time is None else round(cpu_time, 2),
+        "cpu_time": format_runtime(cpu_time),
+        "cpu_efficiency_percent": efficiency,
+        "cpus_usage": round_or_none(ad.get("CpusUsage")),
+        "committed_time": format_runtime(ad.get("CommittedTime")),
+    }
+
+
+def job_row_from_ad(ad: dict[str, Any] | None, fallback_status: str) -> dict[str, Any]:
+    resources = resource_usage_from_ad(ad)
+    if ad is None:
+        return {"status": fallback_status, "request_cpus": None, "request_memory_mb": None, "remote_host": None, "runtime": None, "disk_usage": None, "rss_kb": None, "note": None, **resources}
+    return {"status": CONDOR_STATUS.get(ad.get("JobStatus"), fallback_status), "request_cpus": ad.get("RequestCpus"), "request_memory_mb": ad.get("RequestMemory"), "remote_host": ad.get("RemoteHost"), "runtime": format_runtime(ad.get("RemoteWallClockTime")), "disk_usage": ad.get("DiskUsage"), "rss_kb": ad.get("ResidentSetSize") or ad.get("ImageSize") or ad.get("MemoryUsage"), "note": ad.get("HoldReason"), **resources}
 
 
 def dag_row_from_ad(ad: dict[str, Any], source: str) -> dict[str, Any]:
     cluster = ad.get("ClusterId")
     proc = ad.get("ProcId", 0)
-    return {"job_id": None if cluster is None else f"{cluster}.{proc}", "cluster_id": cluster, "proc_id": proc, "status": CONDOR_STATUS.get(ad.get("JobStatus"), ad.get("JobStatus")), "source": source, "owner": ad.get("Owner"), "batch_name": ad.get("BatchName"), "dagman_job_id": ad.get("DAGManJobId"), "node": ad.get("DAGNodeName") or ad.get("DAGParentNodeNames"), "request_cpus": ad.get("RequestCpus"), "request_memory_mb": ad.get("RequestMemory"), "remote_host": ad.get("RemoteHost"), "runtime": format_runtime(ad.get("RemoteWallClockTime")), "hold_reason": ad.get("HoldReason"), "disk_usage": ad.get("DiskUsage"), "rss_kb": ad.get("ResidentSetSize") or ad.get("ImageSize") or ad.get("MemoryUsage"), "iwd": ad.get("Iwd"), "cmd": ad.get("Cmd"), "args": ad.get("Args"), "out": ad.get("Out"), "err": ad.get("Err"), "log": ad.get("Log")}
+    resources = resource_usage_from_ad(ad)
+    return {"job_id": None if cluster is None else f"{cluster}.{proc}", "cluster_id": cluster, "proc_id": proc, "status": CONDOR_STATUS.get(ad.get("JobStatus"), ad.get("JobStatus")), "source": source, "owner": ad.get("Owner"), "batch_name": ad.get("BatchName"), "dagman_job_id": ad.get("DAGManJobId"), "node": ad.get("DAGNodeName") or ad.get("DAGParentNodeNames"), "request_cpus": ad.get("RequestCpus"), "request_memory_mb": ad.get("RequestMemory"), "remote_host": ad.get("RemoteHost"), "runtime": format_runtime(ad.get("RemoteWallClockTime")), "hold_reason": ad.get("HoldReason"), "disk_usage": ad.get("DiskUsage"), "rss_kb": ad.get("ResidentSetSize") or ad.get("ImageSize") or ad.get("MemoryUsage"), "iwd": ad.get("Iwd"), "cmd": ad.get("Cmd"), "args": ad.get("Args"), "out": ad.get("Out"), "err": ad.get("Err"), "log": ad.get("Log"), **resources}
 
 
 def should_publish_output(path: Path, extensions: tuple[str, ...]) -> bool:
@@ -459,7 +543,7 @@ def collect_jobs(project_dir: Path, include_history: bool = True, heartbeat_file
             else:
                 note = "not found in condor_q"
         outputs = publish_event_outputs(event_dir, webdir, event, output_extensions, max_artifacts_per_event) if (copy_outputs and webdir is not None) else []
-        rows.append({"event": event, "event_page": event_page_href(event), "status": status, "jobid": jobid, "source": source, "request_cpus": normalized["request_cpus"], "request_memory_mb": normalized["request_memory_mb"], "remote_host": normalized["remote_host"], "runtime": normalized["runtime"], "disk_usage": normalized["disk_usage"], "rss_kb": normalized["rss_kb"], "heartbeat": read_heartbeat(event_dir, heartbeat_filename), "outputs": outputs, "output_count": len(outputs), "note": note})
+        rows.append({"event": event, "event_page": event_page_href(event), "status": status, "jobid": jobid, "source": source, "request_cpus": normalized["request_cpus"], "request_memory_mb": normalized["request_memory_mb"], "remote_host": normalized["remote_host"], "runtime": normalized["runtime"], "disk_usage": normalized["disk_usage"], "rss_kb": normalized["rss_kb"], "memory_usage_mb": normalized.get("memory_usage_mb"), "rss_mb": normalized.get("rss_mb"), "disk_usage_mb": normalized.get("disk_usage_mb"), "cpu_time": normalized.get("cpu_time"), "cpu_efficiency_percent": normalized.get("cpu_efficiency_percent"), "heartbeat": read_heartbeat(event_dir, heartbeat_filename), "outputs": outputs, "output_count": len(outputs), "note": note})
     return rows
 
 
