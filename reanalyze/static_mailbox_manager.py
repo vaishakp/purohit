@@ -34,8 +34,22 @@ CONTROL_HTML = """<!doctype html>
     .warn { border-color: #b91c1c; background: rgba(185,28,28,0.08); }
     table { width: 100%; border-collapse: collapse; margin-top: 0.5rem; }
     th, td { text-align: left; border-bottom: 1px solid rgba(128,128,128,0.25); padding: 0.55rem; font-size: 0.9rem; vertical-align: top; }
-    code, input { padding: 0.1rem 0.25rem; border-radius: 4px; background: rgba(128,128,128,0.15); }
-    button { margin: 0.08rem; border: 1px solid rgba(128,128,128,0.35); border-radius: 5px; padding: 0.25rem 0.45rem; cursor: pointer; }
+    code, input { padding: 0.15rem 0.35rem; border-radius: 4px; background: rgba(128,128,128,0.15); }
+    input { min-width: 24rem; border: 1px solid rgba(128,128,128,0.35); }
+    .btn { margin: 0.08rem; border: 1px solid rgba(128,128,128,0.35); border-radius: 6px; padding: 0.32rem 0.55rem; cursor: pointer; transition: background 120ms ease, transform 80ms ease, opacity 120ms ease; }
+    .btn:hover:not(:disabled) { transform: translateY(-1px); }
+    .btn:disabled { cursor: wait; opacity: 0.75; }
+    .btn-primary { background: rgba(37,99,235,0.14); border-color: rgba(37,99,235,0.35); }
+    .btn-danger { background: rgba(185,28,28,0.12); border-color: rgba(185,28,28,0.35); }
+    .btn-pending { background: rgba(146,64,14,0.18); border-color: rgba(146,64,14,0.55); }
+    .btn-success { background: rgba(4,120,87,0.20); border-color: rgba(4,120,87,0.70); color: #047857; font-weight: 700; }
+    .btn-error { background: rgba(185,28,28,0.18); border-color: rgba(185,28,28,0.70); color: #b91c1c; font-weight: 700; }
+    .status { margin-top: 0.75rem; padding: 0.55rem 0.7rem; border-radius: 8px; border: 1px solid rgba(128,128,128,0.25); }
+    .status-muted { opacity: 0.78; }
+    .status-pending { border-color: rgba(146,64,14,0.45); background: rgba(146,64,14,0.10); }
+    .status-ok { border-color: rgba(4,120,87,0.55); background: rgba(4,120,87,0.10); }
+    .status-error { border-color: rgba(185,28,28,0.55); background: rgba(185,28,28,0.10); }
+    .token-row { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
     .muted { opacity: 0.72; }
     .small { font-size: 0.82rem; }
     #lb-warning { display: none; }
@@ -51,8 +65,13 @@ CONTROL_HTML = """<!doctype html>
     <div><strong>Last manager drain host:</strong> <code id="last-drain-host">unknown</code></div>
     <div><strong>Observed CGI hosts:</strong> <code id="observed-hosts">unknown</code></div>
     <div><strong>Last browser enqueue host:</strong> <code id="last-enqueue-host">unknown</code></div>
-    <div><strong>Command token:</strong> <input id="token" type="password" placeholder="optional token"><button onclick="saveToken()">Save in this browser</button></div>
-    <div id="result" class="small muted"></div>
+    <div class="token-row">
+      <strong>Command token:</strong>
+      <input id="token" type="password" placeholder="optional token" oninput="markTokenUnsaved()">
+      <button id="save-token-button" class="btn btn-primary" onclick="saveToken(this)">Save in this browser</button>
+      <span id="token-status" class="small muted">Not saved in this browser.</span>
+    </div>
+    <div id="result" class="status status-muted small">No command queued in this browser session yet.</div>
   </div>
   <div class="card">
     <table><thead><tr><th>Event</th><th>Status</th><th>Cluster ID</th><th>Controls</th></tr></thead><tbody id="jobs"></tbody></table>
@@ -60,10 +79,46 @@ CONTROL_HTML = """<!doctype html>
 <script>
 let mailboxUrl = null;
 let mailboxConfig = {};
+const ORIGINAL_LABEL = "data-original-label";
 function fmt(x) { return x === null || x === undefined || x === "" ? "—" : x; }
-function saveToken() { localStorage.setItem("purohit_mailbox_token", document.getElementById("token").value || ""); }
+function setStatus(message, kind="muted") {
+  const result = document.getElementById("result");
+  result.className = `status status-${kind} small`;
+  result.textContent = message;
+}
+function setButtonState(button, state, label) {
+  if (!button) return;
+  if (!button.hasAttribute(ORIGINAL_LABEL)) button.setAttribute(ORIGINAL_LABEL, button.textContent);
+  button.classList.remove("btn-pending", "btn-success", "btn-error");
+  if (state) button.classList.add(`btn-${state}`);
+  if (label) button.textContent = label;
+  button.disabled = state === "pending";
+}
+function restoreButton(button, delay=1800) {
+  if (!button) return;
+  const original = button.getAttribute(ORIGINAL_LABEL) || button.textContent;
+  setTimeout(() => {
+    button.classList.remove("btn-pending", "btn-success", "btn-error");
+    button.textContent = original;
+    button.disabled = false;
+  }, delay);
+}
+function markTokenUnsaved() {
+  const status = document.getElementById("token-status");
+  const saved = localStorage.getItem("purohit_mailbox_token") || "";
+  const current = document.getElementById("token").value || "";
+  status.textContent = current && current === saved ? "Token is saved in this browser." : "Token edited; click Save to persist it in this browser.";
+}
+function saveToken(button) {
+  const token = document.getElementById("token").value || "";
+  localStorage.setItem("purohit_mailbox_token", token);
+  document.getElementById("token-status").textContent = token ? "Token saved in this browser." : "Empty token saved; token auth may fail.";
+  setButtonState(button, "success", "Saved ✓");
+  setStatus(token ? "Token saved in this browser. You can now use the command buttons." : "Empty token saved. If the CGI requires a token, commands will still fail as unauthorized.", token ? "ok" : "pending");
+  restoreButton(button);
+}
 function controls(event) {
-  return `<button onclick="sendCommand('submit_event','${event}')">Submit</button><button onclick="sendCommand('hold_event','${event}')">Hold</button><button onclick="sendCommand('release_event','${event}')">Release</button><button onclick="sendCommand('remove_event','${event}')">Remove</button>`;
+  return `<button class="btn btn-primary" onclick="sendCommand(this,'submit_event','${event}')">Submit</button><button class="btn" onclick="sendCommand(this,'hold_event','${event}')">Hold</button><button class="btn" onclick="sendCommand(this,'release_event','${event}')">Release</button><button class="btn btn-danger" onclick="sendCommand(this,'remove_event','${event}')">Remove</button>`;
 }
 function updateLoadBalanceWarning() {
   const warning = document.getElementById("lb-warning");
@@ -82,22 +137,31 @@ function updateLoadBalanceWarning() {
     warning.textContent = "";
   }
 }
-async function sendCommand(action, event) {
-  if (!mailboxUrl) return;
+async function sendCommand(button, action, event) {
+  if (!mailboxUrl) {
+    setStatus("Cannot queue command: mailbox URL is not configured yet.", "error");
+    setButtonState(button, "error", "No URL ✗");
+    restoreButton(button);
+    return;
+  }
   if (action === "remove_event" && !confirm(`Remove ${event}?`)) return;
   const token = localStorage.getItem("purohit_mailbox_token") || document.getElementById("token").value || "";
-  const result = document.getElementById("result");
-  result.textContent = `Queueing ${action} for ${event}...`;
+  setButtonState(button, "pending", "Queueing…");
+  setStatus(`Queueing ${action} for ${event}...`, "pending");
   try {
     const response = await fetch(mailboxUrl, {method: "POST", headers: {"Content-Type": "application/json", "X-Purohit-Token": token}, body: JSON.stringify({action, event, token})});
     const data = await response.json();
     if (!response.ok || !data.ok) throw new Error(data.error || `HTTP ${response.status}`);
     if (data.cgi_host) localStorage.setItem("purohit_last_enqueue_host", data.cgi_host);
     if (data.queued && data.queued.id) localStorage.setItem("purohit_last_command_id", data.queued.id);
-    result.textContent = `Queued ${action} for ${event} on ${data.cgi_host || "unknown CGI host"}. The manager will execute it on the next polling pass.`;
+    setButtonState(button, "success", "Queued ✓");
+    setStatus(`Queued ${action} for ${event} on ${data.cgi_host || "unknown CGI host"}. Command ID: ${(data.queued && data.queued.id) || "unknown"}. The manager will execute it on the next polling pass.`, "ok");
     updateLoadBalanceWarning();
+    restoreButton(button, 2200);
   } catch (err) {
-    result.textContent = `Command failed: ${err}`;
+    setButtonState(button, "error", "Failed ✗");
+    setStatus(`Command failed for ${event}: ${err}`, "error");
+    restoreButton(button, 3500);
   }
 }
 async function refresh() {
@@ -106,14 +170,15 @@ async function refresh() {
   mailboxUrl = mailboxConfig.mailbox_url;
   document.getElementById("mailbox-url").textContent = mailboxUrl || "not configured";
   if (!document.getElementById("token").value) document.getElementById("token").value = localStorage.getItem("purohit_mailbox_token") || "";
+  markTokenUnsaved();
   updateLoadBalanceWarning();
   const statusResponse = await fetch(`status.json?ts=${Date.now()}`, {cache: "no-store"});
   const status = await statusResponse.json();
   const rows = (status.jobs || []).map(job => `<tr><td>${fmt(job.event)}</td><td>${fmt(job.status)}</td><td>${fmt(job.jobid)}</td><td>${controls(job.event)}</td></tr>`).join("");
   document.getElementById("jobs").innerHTML = rows || `<tr><td colspan="4">No jobs found.</td></tr>`;
 }
-refresh().catch(err => { document.getElementById("result").textContent = `error: ${err}`; });
-setInterval(() => refresh().catch(console.error), 30000);
+refresh().catch(err => { setStatus(`error: ${err}`, "error"); });
+setInterval(() => refresh().catch(err => setStatus(`refresh error: ${err}`, "error")), 30000);
 </script>
 </body>
 </html>
