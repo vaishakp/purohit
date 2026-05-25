@@ -19,6 +19,7 @@ from typing import Any
 
 import yaml
 
+from reanalyze.assignments import check_command_authorized
 from reanalyze.input_staging import stage_bilby_inputs
 from reanalyze.static_monitor import publish_once
 
@@ -275,10 +276,21 @@ def process_command(project_dir: Path, command: dict[str, Any]) -> dict[str, Any
     event = command.get("event")
     if action not in SUPPORTED_ACTIONS:
         return {"ok": False, "command": command, "message": f"unsupported action {action!r}"}
+    allowed, assignment = check_command_authorized(project_dir, command)
+    if not allowed:
+        return {
+            "ok": False,
+            "forbidden": True,
+            "event": event,
+            "action": action,
+            "command": command,
+            **assignment,
+            "message": f"event {event!r} is assigned to {assignment.get('assigned_to')!r}; operator {assignment.get('operator')!r} is not allowed to run {action!r}",
+        }
     if action == "refresh":
-        return {"ok": True, "command": command, "message": "refresh requested"}
+        return {"ok": True, "command": command, **assignment, "message": "refresh requested"}
     if not isinstance(event, str) or not event:
-        return {"ok": False, "command": command, "message": "event is required"}
+        return {"ok": False, "command": command, **assignment, "message": "event is required"}
     try:
         if action == "submit_event":
             result = submit_event(project_dir, event)
@@ -296,6 +308,7 @@ def process_command(project_dir: Path, command: dict[str, Any]) -> dict[str, Any
         result = called_process_error_result(exc, event=event, action=action)
     except Exception as exc:  # noqa: BLE001 - operational command audit should record failures
         result = {"ok": False, "event": event, "action": action, "message": str(exc)}
+    result.update(assignment)
     result["command"] = command
     return result
 
