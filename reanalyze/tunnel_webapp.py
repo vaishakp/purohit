@@ -20,6 +20,7 @@ import threading
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
+from reanalyze.output_products import apply as apply_output_products
 from reanalyze.tunnel_manager import (
     Handler,
     TunnelState,
@@ -174,6 +175,7 @@ class StaticFirstHandler(Handler):
 
 
 def main() -> None:
+    apply_output_products()
     args = parse_args()
     project_dir = args.project_dir.expanduser().resolve()
     webdir = args.webdir.expanduser().resolve()
