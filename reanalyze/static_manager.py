@@ -29,6 +29,7 @@ RESETTABLE_PATTERNS = (
     "*.rescue*",
     "*.lock",
 )
+GENERATED_CONFIG_SUFFIXES = (".staged.ini", ".gwave.ini", ".target.ini", ".source.ini")
 
 
 def read_json(path: Path) -> dict[str, Any]:
@@ -129,8 +130,21 @@ def event_dir(project_dir: Path, event: str) -> Path:
 
 
 def find_event_config(project_dir: Path, event: str) -> Path:
-    candidates = sorted(event_dir(project_dir, event).glob("*.ini"))
+    edir = event_dir(project_dir, event)
+    status = read_yaml(edir / "status.yaml")
+    submit_ini = status.get("submit_ini")
+    if submit_ini:
+        path = Path(str(submit_ini)).expanduser()
+        if not path.is_absolute():
+            path = edir / path
+        if path.is_file():
+            return path
+        raise FileNotFoundError(f"submit_ini recorded for event {event!r} does not exist: {path}")
+    candidates = sorted(path for path in edir.glob("*.ini") if not any(path.name.endswith(suffix) for suffix in GENERATED_CONFIG_SUFFIXES))
     if not candidates:
+        generated = sorted(edir.glob("*.ini"))
+        if generated:
+            raise FileNotFoundError(f"Only generated INIs found for event {event!r}; set status.yaml submit_ini explicitly. Candidates: {[str(p) for p in generated]}")
         raise FileNotFoundError(f"No copied INI found for event {event!r}")
     return candidates[0]
 
@@ -168,7 +182,7 @@ def submit_event(project_dir: Path, event: str) -> dict[str, Any]:
     out = run_checked(["bilby_pipe", str(submit_config), "--submit"])
     jobid = parse_cluster_id(out.stdout)
     append_submitted(project_dir, event)
-    updates = {"jobid": jobid, "status": "submitted"}
+    updates = {"jobid": jobid, "status": "submitted", "submitted_config": str(submit_config)}
     if staged.enabled:
         updates.update({"staged_config": str(submit_config), "input_manifest": None if staged.manifest_path is None else str(staged.manifest_path), "staged_input_count": len(staged.copied_files)})
     write_status(event_dir(project_dir, event), updates)
