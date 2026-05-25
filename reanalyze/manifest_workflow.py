@@ -147,6 +147,8 @@ class ManifestRerun(PERerun):
         extra_submit_lines=None,
         environment=None,
         enable_input_staging=True,
+        workflow_type="manifest",
+        application="manifest",
         verbose=True,
         progress=True,
     ):
@@ -166,6 +168,8 @@ class ManifestRerun(PERerun):
         self.extra_submit_lines = extra_submit_lines or []
         self.environment = environment
         self.enable_input_staging = enable_input_staging
+        self.workflow_type = workflow_type
+        self.application = application
         self.wrapper_path = None
         self.manifest_df = None
         self.manifest_rows = {}
@@ -208,6 +212,14 @@ class ManifestRerun(PERerun):
         wrapper.chmod(0o755)
         self.wrapper_path = wrapper
         return wrapper
+
+    def _status_metadata(self) -> dict:
+        return {
+            "workflow_type": self.workflow_type,
+            "application": self.application,
+            "manifest": str(self.manifest_path),
+            "command_template": self.command_template,
+        }
 
     def prepare_configs(self, source_dir=None, apx=None, working_dir=None):
         """Prepare ``project_dir/working/<event>`` from the manifest."""
@@ -262,6 +274,7 @@ class ManifestRerun(PERerun):
             self.update_job_status_file(
                 event,
                 {
+                    **self._status_metadata(),
                     "status": "pending",
                     "jobid": None,
                     "config": str(config_path),
@@ -345,6 +358,17 @@ class ManifestRerun(PERerun):
         lines.append("queue 1")
         submit_file = self._submit_file_for_event(event)
         submit_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        self.update_job_status_file(
+            event,
+            {
+                **self._status_metadata(),
+                "submit_file": str(submit_file),
+                "submitted_config": str(config_path),
+                "submit_ini": str(config_path),
+                "output": str(output_path),
+                **staging_info,
+            },
+        )
         return submit_file
 
     def _parse_jobid_from_condor_submit_stdout(self, stdout: str) -> str:
@@ -377,6 +401,7 @@ class ManifestRerun(PERerun):
         self.add_to_submitted_jobs_list(event)
         submit_config = self.manifest_rows[event].get("_submit_config_path", self.manifest_rows[event].get("_config_path"))
         updates = {
+            **self._status_metadata(),
             "jobid": jobid,
             "status": "submitted",
             "submit_file": str(submit_file),

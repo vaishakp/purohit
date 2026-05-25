@@ -28,6 +28,9 @@ RESETTABLE_PATTERNS = (
     "*.dag.*",
     "*.rescue*",
     "*.lock",
+    "condor.out",
+    "condor.err",
+    "condor.log",
 )
 GENERATED_CONFIG_SUFFIXES = (".staged.ini", ".gwave.ini", ".target.ini", ".source.ini")
 
@@ -129,6 +132,18 @@ def event_dir(project_dir: Path, event: str) -> Path:
     return project_dir / "working" / event
 
 
+def resolve_event_path(project_dir: Path, event: str, value: Any) -> Path:
+    path = Path(str(value)).expanduser()
+    if not path.is_absolute():
+        path = event_dir(project_dir, event) / path
+    return path
+
+
+def is_manifest_event(status: dict[str, Any]) -> bool:
+    workflow = str(status.get("workflow_type") or "").lower()
+    return workflow == "manifest" or bool(status.get("submit_file"))
+
+
 def find_event_config(project_dir: Path, event: str) -> Path:
     edir = event_dir(project_dir, event)
     status = read_yaml(edir / "status.yaml")
@@ -173,7 +188,37 @@ def called_process_error_result(exc: subprocess.CalledProcessError, *, event: st
     }
 
 
-def submit_event(project_dir: Path, event: str) -> dict[str, Any]:
+def submit_manifest_event(project_dir: Path, event: str, status: dict[str, Any] | None = None) -> dict[str, Any]:
+    if event in submitted_jobs(project_dir):
+        return {"ok": False, "message": f"event {event} is already in submitted_jobs.txt"}
+    status = status or read_yaml(event_dir(project_dir, event) / "status.yaml")
+    submit_file_value = status.get("submit_file")
+    if not submit_file_value:
+        raise FileNotFoundError(
+            f"Manifest event {event!r} has no submit_file in status.yaml. "
+            "Prepare the event with ManifestRerun/write_submit_file before using web Submit."
+        )
+    submit_file = resolve_event_path(project_dir, event, submit_file_value)
+    if not submit_file.is_file():
+        raise FileNotFoundError(f"Manifest submit file for event {event!r} does not exist: {submit_file}")
+    out = run_checked(["condor_submit", str(submit_file)])
+    jobid = parse_cluster_id(out.stdout)
+    append_submitted(project_dir, event)
+    updates = {
+        "jobid": jobid,
+        "status": "submitted",
+        "submit_file": str(submit_file),
+        "workflow_type": status.get("workflow_type", "manifest"),
+        "application": status.get("application", "manifest"),
+    }
+    for key in ("config", "submit_ini", "submitted_config", "output", "manifest", "command_template"):
+        if key in status:
+            updates[key] = status[key]
+    write_status(event_dir(project_dir, event), updates)
+    return {"ok": True, "event": event, "jobid": jobid, "stdout": out.stdout, "stderr": out.stderr, "submit_file": str(submit_file), "workflow_type": updates["workflow_type"], "application": updates["application"]}
+
+
+def submit_bilby_event(project_dir: Path, event: str) -> dict[str, Any]:
     if event in submitted_jobs(project_dir):
         return {"ok": False, "message": f"event {event} is already in submitted_jobs.txt"}
     config = find_event_config(project_dir, event)
@@ -182,11 +227,18 @@ def submit_event(project_dir: Path, event: str) -> dict[str, Any]:
     out = run_checked(["bilby_pipe", str(submit_config), "--submit"])
     jobid = parse_cluster_id(out.stdout)
     append_submitted(project_dir, event)
-    updates = {"jobid": jobid, "status": "submitted", "submitted_config": str(submit_config)}
+    updates = {"jobid": jobid, "status": "submitted", "submitted_config": str(submit_config), "workflow_type": "bilby_pipe", "application": "bilby"}
     if staged.enabled:
         updates.update({"staged_config": str(submit_config), "input_manifest": None if staged.manifest_path is None else str(staged.manifest_path), "staged_input_count": len(staged.copied_files)})
     write_status(event_dir(project_dir, event), updates)
-    return {"ok": True, "event": event, "jobid": jobid, "stdout": out.stdout, "stderr": out.stderr, "staging_enabled": staged.enabled, "staged_config": str(submit_config), "input_manifest": None if staged.manifest_path is None else str(staged.manifest_path), "staged_input_count": len(staged.copied_files)}
+    return {"ok": True, "event": event, "jobid": jobid, "stdout": out.stdout, "stderr": out.stderr, "staging_enabled": staged.enabled, "staged_config": str(submit_config), "input_manifest": None if staged.manifest_path is None else str(staged.manifest_path), "staged_input_count": len(staged.copied_files), "workflow_type": "bilby_pipe", "application": "bilby"}
+
+
+def submit_event(project_dir: Path, event: str) -> dict[str, Any]:
+    status = read_yaml(event_dir(project_dir, event) / "status.yaml")
+    if is_manifest_event(status):
+        return submit_manifest_event(project_dir, event, status=status)
+    return submit_bilby_event(project_dir, event)
 
 
 def jobid_for_event(project_dir: Path, event: str) -> str:

@@ -1,4 +1,4 @@
-from reanalyze.tunnel_manager import main
+from reanalyze.tunnel_webapp import main
 
 
 if __name__ == "__main__":
