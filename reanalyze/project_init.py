@@ -38,6 +38,29 @@ def _write_yaml(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(yaml.safe_dump(payload, sort_keys=False))
 
 
+def _load_yaml_mapping(path: Path | None) -> dict[str, Any]:
+    if path is None:
+        return {}
+    data = yaml.safe_load(path.expanduser().read_text()) or {}
+    if not isinstance(data, dict):
+        raise ValueError(f"YAML file must contain a mapping: {path}")
+    return data
+
+
+def _parse_key_value(items: list[str] | None, *, option: str) -> dict[str, str]:
+    parsed: dict[str, str] = {}
+    for item in items or []:
+        if "=" not in item:
+            raise ValueError(f"{option} entries must have the form EVENT=TOKEN: {item!r}")
+        key, value = item.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if not key or not value:
+            raise ValueError(f"{option} entries must have non-empty EVENT and TOKEN: {item!r}")
+        parsed[key] = value
+    return parsed
+
+
 def _ensure_token(project_dir: Path, token_file: Path | None = None, *, overwrite: bool = False) -> Path:
     path = token_file or project_dir / "control" / "tunnel_token.txt"
     path = path.expanduser()
@@ -66,17 +89,24 @@ def init_project(
     *,
     hosts_file: Path,
     source_host_name: str,
-    source_dir: str,
-    project_dir: Path | None,
-    apx: str,
-    target_host_name: str | None = None,
-    events: list[str] | None = None,
-    mode: str = "auto",
+    source_dir: str | None = None,
+    project_dir: Path | None = None,
+    apx: str = "NRSur7dq4",
+    approvals: dict[str, str] | None = None,
+    overwrite_configs: bool = False,
+    reconfigure_existing_configs: bool = True,
     accounting: str | None = "ligo.dev.o4.cbc.pe.bilby",
     accounting_user: str = "auto",
     label_suffix: str = "_p2",
-    overwrite_configs: bool = False,
-    reconfigure_existing_configs: bool = True,
+    cache_config_discovery: bool = True,
+    refresh_config_cache: bool = False,
+    config_cache_file: Path | str | None = None,
+    working_dir: str | Path | None = None,
+    verbose: bool = True,
+    progress: bool = True,
+    target_host_name: str | None = None,
+    events: list[str] | None = None,
+    mode: str = "auto",
     data_subdir: str = "data",
     submit_suffix: str = ".target.ini",
     preserve_roots: list[str] | None = None,
@@ -84,6 +114,13 @@ def init_project(
     create_token: bool = True,
     token_file: Path | None = None,
 ) -> dict[str, Any]:
+    if source_dir is None:
+        if working_dir is None:
+            raise TypeError("init_project requires source_dir=... for the source config tree")
+        source_dir = str(working_dir)
+    elif working_dir is not None and Path(source_dir) != Path(working_dir):
+        raise ValueError("Pass only source_dir=...; working_dir=... is a deprecated PERerun alias")
+
     profiles = HostProfiles.load(hosts_file)
     current = profiles.detect_current()
     source = profiles[source_host_name]
@@ -99,6 +136,8 @@ def init_project(
     use_local = mode == "local" or (mode == "auto" and is_on_source)
     use_remote = mode == "remote" or (mode == "auto" and not is_on_source)
 
+    approvals = {str(key): str(value) for key, value in (approvals or {}).items()}
+
     summary: dict[str, Any] = {
         "generated_at": time.time(),
         "mode": "local" if use_local else "remote",
@@ -108,7 +147,20 @@ def init_project(
         "source_dir": source_dir,
         "target_project_dir": str(target_project),
         "apx": apx,
+        "approval_events": sorted(approvals),
         "events_requested": events or [],
+        "pererun_arguments": {
+            "overwrite_configs": overwrite_configs,
+            "reconfigure_existing_configs": reconfigure_existing_configs,
+            "accounting": accounting,
+            "accounting_user": accounting_user,
+            "label_suffix": label_suffix,
+            "cache_config_discovery": cache_config_discovery,
+            "refresh_config_cache": refresh_config_cache,
+            "config_cache_file": str(config_cache_file) if config_cache_file else None,
+            "verbose": verbose,
+            "progress": progress,
+        },
     }
 
     if use_local:
@@ -116,11 +168,17 @@ def init_project(
             source_dir=source_dir,
             project_dir=target_project,
             apx=apx,
+            approvals=approvals,
+            overwrite_configs=overwrite_configs,
+            reconfigure_existing_configs=reconfigure_existing_configs,
             accounting=accounting,
             accounting_user=accounting_user,
             label_suffix=label_suffix,
-            overwrite_configs=overwrite_configs,
-            reconfigure_existing_configs=reconfigure_existing_configs,
+            cache_config_discovery=cache_config_discovery,
+            refresh_config_cache=refresh_config_cache,
+            config_cache_file=config_cache_file,
+            verbose=verbose,
+            progress=progress,
         )
         rerun.prepare_configs()
         if events:
@@ -142,6 +200,7 @@ def init_project(
             target_project_dir=target_project,
             apx=apx,
             events=events or None,
+            approvals=approvals,
             data_subdir=data_subdir,
             submit_suffix=submit_suffix,
             preserve_roots=preserve_roots,
@@ -167,6 +226,7 @@ def init_project(
             "source_dir": source_dir,
             "project_dir": str(target_project),
             "apx": apx,
+            "approval_events": sorted(approvals),
             "mode": summary["mode"],
         },
     )
@@ -180,9 +240,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--hosts", required=True, type=Path, help="Host profile YAML file with source/target cluster definitions.")
     parser.add_argument("--source-host", default="cit", help="Source host profile name. Default: cit")
     parser.add_argument("--target-host", default=None, help="Target host profile name. Defaults to hostname auto-detection.")
-    parser.add_argument("--source-dir", required=True, help="Source config tree on the source host.")
+    parser.add_argument("--source-dir", default=None, help="Source config tree on the source host.")
+    parser.add_argument("--working-dir", default=None, help="Deprecated PERerun alias for --source-dir.")
     parser.add_argument("--project-dir", type=Path, default=None, help="Target project dir. Defaults to target host project_dir.")
-    parser.add_argument("--apx", required=True, help="Approximant/config token used to select source INIs.")
+    parser.add_argument("--apx", default="NRSur7dq4", help="Approximant/config token used to select source INIs.")
+    parser.add_argument("--approvals-yaml", type=Path, default=None, help="YAML mapping EVENT: approval-token used to select configs.")
+    parser.add_argument("--approval", action="append", default=[], help="Inline approval EVENT=TOKEN. Repeatable; overrides YAML entries.")
     parser.add_argument("--event", action="append", default=[], help="Event to initialize. Repeatable. Omit for all matching events.")
     parser.add_argument("--mode", choices=["auto", "local", "remote"], default="auto", help="auto: local on source host, remote import otherwise.")
     parser.add_argument("--accounting", default="ligo.dev.o4.cbc.pe.bilby")
@@ -190,6 +253,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--label-suffix", default="_p2")
     parser.add_argument("--overwrite-configs", action="store_true")
     parser.add_argument("--no-reconfigure-existing-configs", action="store_true")
+    parser.add_argument("--no-cache-config-discovery", action="store_true")
+    parser.add_argument("--refresh-config-cache", action="store_true")
+    parser.add_argument("--config-cache-file", type=Path, default=None)
+    parser.add_argument("--quiet", action="store_true", help="Set PERerun verbose=False in local mode.")
+    parser.add_argument("--no-progress", action="store_true", help="Set PERerun progress=False in local mode.")
     parser.add_argument("--data-subdir", default="data")
     parser.add_argument("--submit-suffix", default=".target.ini")
     parser.add_argument("--preserve-root", action="append", default=[])
@@ -201,13 +269,18 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    approvals = {str(key): str(value) for key, value in _load_yaml_mapping(args.approvals_yaml).items()}
+    approvals.update(_parse_key_value(args.approval, option="--approval"))
+
     summary = init_project(
         hosts_file=args.hosts,
         source_host_name=args.source_host,
         target_host_name=args.target_host,
         source_dir=args.source_dir,
+        working_dir=args.working_dir,
         project_dir=args.project_dir,
         apx=args.apx,
+        approvals=approvals,
         events=args.event or None,
         mode=args.mode,
         accounting=args.accounting,
@@ -215,6 +288,11 @@ def main() -> None:
         label_suffix=args.label_suffix,
         overwrite_configs=args.overwrite_configs,
         reconfigure_existing_configs=not args.no_reconfigure_existing_configs,
+        cache_config_discovery=not args.no_cache_config_discovery,
+        refresh_config_cache=args.refresh_config_cache,
+        config_cache_file=args.config_cache_file,
+        verbose=not args.quiet,
+        progress=not args.no_progress,
         data_subdir=args.data_subdir,
         submit_suffix=args.submit_suffix,
         preserve_roots=args.preserve_root or None,
