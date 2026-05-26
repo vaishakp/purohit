@@ -13,6 +13,15 @@ dependencies = [
   "PyYAML",
   "tqdm",
   "waveformtools",
+  "pycbc",
+  "lalsuite",
+  "ligo-common",
+  "termcolor",
+  "pyseobnr",
+  "htcondor",
+  "sympy",
+  "bilby",
+  "bilby_pipe",
 ]
 
 [project.optional-dependencies]

@@ -8,3 +8,12 @@ dependencies:
   - pyyaml
   - tqdm
   - pip
+  - pycbc
+  - lalsuite
+  - ligo-common
+  - termcolor
+  - pyseobnr
+  - htcondor
+  - sympy
+  - bilby
+  - bilby_pipe
