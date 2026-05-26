@@ -38,13 +38,6 @@ def _write_yaml(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(yaml.safe_dump(payload, sort_keys=False))
 
 
-def _load_yaml_mapping(path: Path) -> dict[str, Any]:
-    data = yaml.safe_load(path.expanduser().read_text()) or {}
-    if not isinstance(data, dict):
-        raise ValueError(f"YAML file must contain a mapping: {path}")
-    return data
-
-
 def _ensure_token(project_dir: Path, token_file: Path | None = None, *, overwrite: bool = False) -> Path:
     path = token_file or project_dir / "control" / "tunnel_token.txt"
     path = path.expanduser()
@@ -69,156 +62,6 @@ def _require_profile(profiles: HostProfiles, name: str | None, role: str) -> Hos
     return profiles[name]
 
 
-def _listify(value: Any) -> list[str]:
-    if value is None:
-        return []
-    if isinstance(value, (list, tuple, set)):
-        return [str(item) for item in value]
-    return [str(value)]
-
-
-def _default_forbidden_prefixes(*, source: HostProfile, target: HostProfile, source_dir: str, mode: str) -> list[str]:
-    """Return source-side strings that should not survive in target submit INIs."""
-
-    if mode != "remote":
-        return []
-    prefixes: list[str] = []
-    if source.home is not None and source.home != target.home:
-        prefixes.extend([str(source.home).rstrip("/") + "/", str(source.home)])
-    clean_source_dir = str(source_dir).rstrip("/")
-    if clean_source_dir:
-        prefixes.extend([clean_source_dir + "/", clean_source_dir])
-    # Preserve order but remove duplicates/empties.
-    seen: set[str] = set()
-    unique: list[str] = []
-    for prefix in prefixes:
-        if prefix and prefix not in seen:
-            seen.add(prefix)
-            unique.append(prefix)
-    return unique
-
-
-def validate_project_initialization(
-    *,
-    summary: dict[str, Any],
-    project_dir: Path,
-    source: HostProfile,
-    target: HostProfile,
-    source_dir: str,
-    validation: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Validate the project state produced by ``init_project``.
-
-    The report is intentionally JSON-serializable so it can be embedded directly
-    in ``control/project_init_summary.json``.
-    """
-
-    config = dict(validation or {})
-    if not config.get("enabled", True):
-        return {"enabled": False, "ok": True, "errors": [], "warnings": [], "events": []}
-
-    require_submit_ini = bool(config.get("require_submit_ini", True))
-    require_submit_ini_under_project = bool(config.get("require_submit_ini_under_project", True))
-    check_manifest_files = bool(config.get("check_manifest_files", True))
-    fail_on_error = bool(config.get("fail_on_error", True))
-    forbidden_prefixes = _default_forbidden_prefixes(
-        source=source,
-        target=target,
-        source_dir=source_dir,
-        mode=str(summary.get("mode", "")),
-    )
-    forbidden_prefixes.extend(_listify(config.get("forbidden_path_prefixes")))
-
-    errors: list[str] = []
-    warnings: list[str] = []
-    event_reports: list[dict[str, Any]] = []
-    project_resolved = project_dir.expanduser().resolve()
-
-    events = summary.get("events", []) or []
-    if not events:
-        warnings.append("no events were initialized")
-
-    for item in events:
-        event = str(item.get("event", ""))
-        report: dict[str, Any] = {
-            "event": event,
-            "ok": True,
-            "errors": [],
-            "warnings": [],
-        }
-        submit_ini_raw = item.get("submit_ini")
-        submit_ini = Path(str(submit_ini_raw)).expanduser() if submit_ini_raw else None
-        report["submit_ini"] = str(submit_ini) if submit_ini is not None else None
-
-        if require_submit_ini and submit_ini is None:
-            message = f"{event}: missing submit_ini"
-            report["errors"].append(message)
-            errors.append(message)
-        elif submit_ini is not None:
-            report["submit_ini_exists"] = submit_ini.is_file()
-            if not submit_ini.is_file():
-                message = f"{event}: submit_ini does not exist: {submit_ini}"
-                report["errors"].append(message)
-                errors.append(message)
-            else:
-                if require_submit_ini_under_project:
-                    try:
-                        submit_ini.resolve().relative_to(project_resolved)
-                        report["submit_ini_under_project"] = True
-                    except ValueError:
-                        report["submit_ini_under_project"] = False
-                        message = f"{event}: submit_ini is outside project_dir: {submit_ini}"
-                        report["errors"].append(message)
-                        errors.append(message)
-
-                text = submit_ini.read_text(errors="replace")
-                matches = [prefix for prefix in forbidden_prefixes if prefix and prefix in text]
-                report["forbidden_path_matches"] = matches
-                if matches:
-                    message = f"{event}: forbidden source path(s) remain in submit_ini: {matches}"
-                    report["errors"].append(message)
-                    errors.append(message)
-
-        manifest_path = project_dir / "working" / event / "input_manifest.json"
-        report["manifest"] = str(manifest_path)
-        report["manifest_exists"] = manifest_path.is_file()
-        report["manifest_files_checked"] = 0
-        report["missing_manifest_files"] = []
-        if check_manifest_files and manifest_path.is_file():
-            try:
-                manifest = json.loads(manifest_path.read_text())
-            except json.JSONDecodeError as exc:
-                message = f"{event}: invalid input_manifest.json: {exc}"
-                report["errors"].append(message)
-                errors.append(message)
-            else:
-                for dep in manifest.get("dependencies", []) or []:
-                    target_path = dep.get("target_path") or dep.get("staged") or dep.get("local_staged")
-                    if not target_path:
-                        continue
-                    report["manifest_files_checked"] += 1
-                    path = Path(str(target_path)).expanduser()
-                    if not path.exists():
-                        report["missing_manifest_files"].append(str(path))
-                if report["missing_manifest_files"]:
-                    message = f"{event}: missing copied dependency file(s): {report['missing_manifest_files']}"
-                    report["errors"].append(message)
-                    errors.append(message)
-
-        report["ok"] = not report["errors"]
-        event_reports.append(report)
-
-    return {
-        "enabled": True,
-        "ok": not errors,
-        "fail_on_error": fail_on_error,
-        "errors": errors,
-        "warnings": warnings,
-        "forbidden_path_prefixes": forbidden_prefixes,
-        "events": event_reports,
-    }
-
-
 def init_project(
     *,
     hosts_file: Path,
@@ -240,7 +83,6 @@ def init_project(
     rsync_args: list[str] | None = None,
     create_token: bool = True,
     token_file: Path | None = None,
-    validation: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     profiles = HostProfiles.load(hosts_file)
     current = profiles.detect_current()
@@ -315,19 +157,6 @@ def init_project(
 
     init_summary_path = target_project / "control" / "project_init_summary.json"
     init_config_path = target_project / "control" / "project_init.yaml"
-    summary["project_init_summary"] = str(init_summary_path)
-    summary["project_init_config"] = str(init_config_path)
-
-    validation_report = validate_project_initialization(
-        summary=summary,
-        project_dir=target_project,
-        source=source,
-        target=target,
-        source_dir=source_dir,
-        validation=validation,
-    )
-    summary["validation"] = validation_report
-
     _write_json(init_summary_path, summary)
     _write_yaml(
         init_config_path,
@@ -339,11 +168,10 @@ def init_project(
             "project_dir": str(target_project),
             "apx": apx,
             "mode": summary["mode"],
-            "validation_ok": validation_report.get("ok", True),
         },
     )
-    if not validation_report.get("ok", True) and validation_report.get("fail_on_error", True):
-        raise RuntimeError(f"project initialization validation failed; see {init_summary_path}")
+    summary["project_init_summary"] = str(init_summary_path)
+    summary["project_init_config"] = str(init_config_path)
     return summary
 
 
@@ -368,26 +196,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rsync-arg", action="append", default=[])
     parser.add_argument("--no-create-token", action="store_true")
     parser.add_argument("--token-file", type=Path, default=None)
-    parser.add_argument("--validation-yaml", type=Path, default=None, help="Optional validation mapping merged into the default initialization checks.")
-    parser.add_argument("--no-validate", action="store_true", help="Disable post-initialization validation.")
-    parser.add_argument("--validation-warning-only", action="store_true", help="Record validation errors but do not fail the command.")
-    parser.add_argument("--forbid-path-prefix", action="append", default=[], help="Additional string/path prefix that must not appear in generated submit INIs. Repeatable.")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    validation = _load_yaml_mapping(args.validation_yaml) if args.validation_yaml else {}
-    if args.no_validate:
-        validation["enabled"] = False
-    if args.validation_warning_only:
-        validation["fail_on_error"] = False
-    if args.forbid_path_prefix:
-        validation["forbidden_path_prefixes"] = [
-            *(_listify(validation.get("forbidden_path_prefixes"))),
-            *args.forbid_path_prefix,
-        ]
-
     summary = init_project(
         hosts_file=args.hosts,
         source_host_name=args.source_host,
@@ -408,7 +221,6 @@ def main() -> None:
         rsync_args=args.rsync_arg or None,
         create_token=not args.no_create_token,
         token_file=args.token_file,
-        validation=validation,
     )
     print(json.dumps(summary, indent=2, sort_keys=True))
 
