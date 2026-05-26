@@ -8,7 +8,7 @@ For each known event, products are discovered only under:
   ``output``, ``outdir``, ``output_dir``, ``result_dir``, or ``results_dir``.
 
 The event page stores product metadata and fetches live files through a tokened
-API endpoint.  Parent directories and neighboring event directories are never
+API endpoint. Parent directories and neighboring event directories are never
 exposed as browsable roots.
 """
 
@@ -26,6 +26,25 @@ IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".svg", ".webp", ".gif"}
 FIRST_CLASS_EXTENSIONS = IMAGE_EXTENSIONS | {".html", ".pdf"}
 STATUS_OUTPUT_KEYS = ("output", "outdir", "output_dir", "result_dir", "results_dir")
 TEXT_PREVIEW_EXTENSIONS = {".txt", ".log", ".out", ".err", ".json", ".yaml", ".yml", ".ini", ".cfg", ".sub", ".dag", ".sh"}
+CONFIG_EXTENSIONS = {".ini", ".cfg"}
+CONFIG_STATUS_KEYS = (
+    "submit_ini",
+    "submitted_config",
+    "staged_config",
+    "source_ini",
+    "original_ini",
+    "config",
+    "config_ini",
+    "bilby_ini",
+    "bilby_config",
+    "bilby_config_ini",
+    "pyring_ini",
+    "pyring_config",
+    "pyring_config_ini",
+    "ringdown_ini",
+    "ringdown_config",
+)
+CONFIG_NAME_KEYWORDS = ("bilby", "pyring", "pyRing", "ringdown", "config", "ini")
 
 
 def apply() -> None:
@@ -132,6 +151,124 @@ def _api_href(event: str, source: str, rel: Path) -> str:
     )
 
 
+def _path_under_roots(path: Path, roots: list[tuple[str, Path]]) -> tuple[str, Path] | None:
+    try:
+        resolved = path.expanduser().resolve()
+    except OSError:
+        return None
+    for root_label, root in roots:
+        try:
+            root_resolved = root.expanduser().resolve()
+        except OSError:
+            continue
+        if resolved == root_resolved or root_resolved in resolved.parents:
+            try:
+                return root_label, resolved.relative_to(root_resolved)
+            except ValueError:
+                continue
+    return None
+
+
+def _config_kind(path: Path, hint: str | None = None) -> str:
+    text = f"{hint or ''} {path.as_posix()}".lower()
+    if "pyring" in text or "pyRing".lower() in text or "ringdown" in text:
+        return "pyRing INI"
+    if "bilby" in text or "submit_ini" in text or "submitted_config" in text or "staged_config" in text:
+        return "Bilby INI"
+    return "Config INI"
+
+
+def _config_priority(item: dict[str, Any]) -> tuple[int, str]:
+    kind = str(item.get("kind", "")).lower()
+    label = str(item.get("label", ""))
+    if "bilby" in kind:
+        rank = 0
+    elif "pyring" in kind:
+        rank = 1
+    else:
+        rank = 2
+    return rank, label
+
+
+def _add_config_item(items: list[dict[str, Any]], seen: set[Path], event: str, roots: list[tuple[str, Path]], path: Path, *, hint: str | None = None) -> None:
+    if path.suffix.lower() not in CONFIG_EXTENSIONS or not path.is_file():
+        return
+    located = _path_under_roots(path, roots)
+    if located is None:
+        return
+    root_label, rel = located
+    resolved = path.expanduser().resolve()
+    if resolved in seen:
+        return
+    seen.add(resolved)
+    try:
+        stat = resolved.stat()
+    except OSError:
+        return
+    kind = _config_kind(resolved, hint)
+    items.append(
+        {
+            "label": f"{kind}: {root_label}/{rel.as_posix()}",
+            "source": root_label,
+            "path": rel.as_posix(),
+            "kind": kind,
+            "browser_preview": True,
+            "api_href": _api_href(event, root_label, rel),
+            "mtime": stat.st_mtime,
+            "size": stat.st_size,
+            "status_key": hint,
+        }
+    )
+
+
+def discover_event_configs(event_dir: Path, event: str, max_configs: int = 20) -> list[dict[str, Any]]:
+    """Discover event-scoped bilby/pyRing/config INI files for the detail page.
+
+    Configs are served only when they lie under the event working directory or
+    another event-scoped output root. Absolute paths outside those roots are
+    ignored to avoid exposing parent/sibling project directories.
+    """
+
+    from reanalyze import static_monitor
+
+    roots = event_output_roots(event_dir)
+    status = static_monitor.read_yaml(event_dir / "status.yaml")
+    items: list[dict[str, Any]] = []
+    seen: set[Path] = set()
+
+    for key in CONFIG_STATUS_KEYS:
+        value = status.get(key)
+        if value in (None, ""):
+            continue
+        path = _coerce_path(value)
+        if path is None:
+            continue
+        if not path.is_absolute():
+            path = event_dir / path
+        _add_config_item(items, seen, event, roots, path, hint=key)
+
+    for root_label, root in roots:
+        if not root.is_dir():
+            continue
+        for path in root.rglob("*"):
+            if path.suffix.lower() not in CONFIG_EXTENSIONS:
+                continue
+            name = path.name.lower()
+            if not any(word.lower() in name for word in CONFIG_NAME_KEYWORDS):
+                # Keep generic .ini files in the top two directory levels; this
+                # catches copied bilby/pyring configs named e.g. complete.ini,
+                # while avoiding a flood of unrelated deep assets.
+                try:
+                    rel_parts = path.relative_to(root).parts
+                except ValueError:
+                    continue
+                if len(rel_parts) > 2:
+                    continue
+            _add_config_item(items, seen, event, roots, path, hint=root_label)
+
+    return sorted(items, key=_config_priority)[:max_configs]
+
+
 def discover_event_products(event_dir: Path, event: str, extensions: tuple[str, ...], max_files: int) -> list[dict[str, Any]]:
     outputs: list[dict[str, Any]] = []
     if max_files <= 0:
@@ -179,7 +316,7 @@ def publish_event_outputs(event_dir: Path, webdir: Path, event: str, extensions:
     """Compatibility wrapper used by static_monitor.
 
     In tunnel mode this returns live product metadata and does not copy source
-    files.  The ``webdir`` argument is intentionally unused.
+    files. The ``webdir`` argument is intentionally unused.
     """
 
     return discover_event_products(event_dir, event, extensions, max_files)
@@ -189,7 +326,7 @@ def collect_jobs(project_dir: Path, include_history: bool = True, heartbeat_file
     """Collect jobs with live event-scoped output products every cycle.
 
     This mirrors ``static_monitor.collect_jobs`` but removes the old coupling
-    between output discovery and periodic artifact copying.  Updated plots appear
+    between output discovery and periodic artifact copying. Updated plots appear
     on the next monitor cycle because product metadata includes source mtimes.
     """
 
@@ -221,7 +358,8 @@ def collect_jobs(project_dir: Path, include_history: bool = True, heartbeat_file
             else:
                 note = "not found in condor_q"
         outputs = discover_event_products(event_dir, event, output_extensions, max_artifacts_per_event)
-        rows.append({"event": event, "event_page": static_monitor.event_page_href(event), "status": status, "jobid": jobid, "source": source, "request_cpus": normalized["request_cpus"], "request_memory_mb": normalized["request_memory_mb"], "remote_host": normalized["remote_host"], "runtime": normalized["runtime"], "disk_usage": normalized["disk_usage"], "rss_kb": normalized["rss_kb"], "memory_usage_mb": normalized.get("memory_usage_mb"), "rss_mb": normalized.get("rss_mb"), "disk_usage_mb": normalized.get("disk_usage_mb"), "cpu_time": normalized.get("cpu_time"), "cpu_efficiency_percent": normalized.get("cpu_efficiency_percent"), "heartbeat": static_monitor.read_heartbeat(event_dir, heartbeat_filename), "outputs": outputs, "output_count": len(outputs), "note": note})
+        configs = discover_event_configs(event_dir, event)
+        rows.append({"event": event, "event_page": static_monitor.event_page_href(event), "status": status, "jobid": jobid, "source": source, "request_cpus": normalized["request_cpus"], "request_memory_mb": normalized["request_memory_mb"], "remote_host": normalized["remote_host"], "runtime": normalized["runtime"], "disk_usage": normalized["disk_usage"], "rss_kb": normalized["rss_kb"], "memory_usage_mb": normalized.get("memory_usage_mb"), "rss_mb": normalized.get("rss_mb"), "disk_usage_mb": normalized.get("disk_usage_mb"), "cpu_time": normalized.get("cpu_time"), "cpu_efficiency_percent": normalized.get("cpu_efficiency_percent"), "heartbeat": static_monitor.read_heartbeat(event_dir, heartbeat_filename), "outputs": outputs, "output_count": len(outputs), "configs": configs, "config_count": len(configs), "note": note})
     return rows
 
 
@@ -286,6 +424,8 @@ def event_detail_html(event: str) -> str:
     .preview-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 1rem; margin: 0.5rem 0 1rem 0; }
     .preview-card { border: 1px solid rgba(128,128,128,0.22); border-radius: 10px; padding: 0.6rem; }
     .preview-card img { width: 100%; max-height: 260px; object-fit: contain; display: block; background: rgba(128,128,128,0.08); border-radius: 8px; }
+    .config-preview { margin-top: 0.75rem; }
+    .config-preview summary { cursor: pointer; font-weight: 700; }
     .status-running { color: #047857; font-weight: 700; }
     .status-completed { color: #2563eb; font-weight: 700; }
     .status-held, .status-removed, .status-failed { color: #b91c1c; font-weight: 700; }
@@ -295,8 +435,9 @@ def event_detail_html(event: str) -> str:
 <body>
   <h1 id="title">Purohit event detail</h1>
   <nav><a href="../../index.html">Monitor</a><a href="../../tunnel.html">Commands</a><a href="../../files.html">Files</a><a href="../../health.html">Health</a></nav>
-  <p class="muted">Products are served live from this event's working/output roots only. Parent and sibling directories are not exposed. Legacy copied product links are also supported while older status files age out.</p>
+  <p class="muted">Products and config INIs are served live from this event's working/output roots only. Parent and sibling directories are not exposed. Legacy copied product links are also supported while older status files age out.</p>
   <div id="summary" class="card">Loading...</div>
+  <h2>Configuration INIs</h2><div id="configs" class="card"></div>
   <h2>Live outputs and plots</h2><div id="outputs" class="card"></div>
   <h2>Condor DAG jobs</h2><div id="jobs" class="card"></div>
   <h2>Raw detail JSON</h2><div class="card"><pre id="raw">loading...</pre></div>
@@ -339,7 +480,19 @@ async function openProduct(index) {
     alert(`Could not open product: ${err}`);
   }
 }
+async function openConfig(index) {
+  const item = currentConfigs[index];
+  try {
+    const blob = await fetchBlob(item);
+    const url = URL.createObjectURL(blob);
+    objectUrls.push(url);
+    window.open(url, "_blank", "noopener");
+  } catch (err) {
+    alert(`Could not open config: ${err}`);
+  }
+}
 let currentOutputs = [];
+let currentConfigs = [];
 async function loadPreviews(outputs) {
   for (const url of objectUrls.splice(0)) URL.revokeObjectURL(url);
   for (const [index, item] of outputs.entries()) {
@@ -355,6 +508,26 @@ async function loadPreviews(outputs) {
       img.alt = `preview unavailable: ${err}`;
     }
   }
+}
+async function loadConfigPreviews(configs) {
+  for (const [index, item] of configs.entries()) {
+    const pre = document.getElementById(`config-preview-${index}`);
+    if (!pre) continue;
+    try {
+      const blob = await fetchBlob(item);
+      const text = await blob.text();
+      pre.textContent = text;
+    } catch (err) {
+      pre.textContent = `preview unavailable: ${err}`;
+    }
+  }
+}
+function configTable(configs) {
+  currentConfigs = configs || [];
+  if (!configs || configs.length === 0) return "No event-scoped bilby/pyRing/config INI files found yet.";
+  const rows = configs.map((item, index) => `<tr><td>${esc(item.label)}</td><td>${esc(fmt(item.kind))}</td><td>${esc(fmt(item.source))}</td><td><code>${esc(fmt(item.path))}</code></td><td>${item.size || "—"}</td><td>${item.mtime ? new Date(item.mtime * 1000).toLocaleString() : "—"}</td><td><button onclick="openConfig(${index})">Open</button></td></tr>`).join("");
+  const previews = configs.map((item, index) => `<details class="config-preview"><summary>${esc(item.label)}</summary><pre id="config-preview-${index}">loading...</pre></details>`).join("");
+  return `<table><thead><tr><th>Config</th><th>Kind</th><th>Source</th><th>Path</th><th>Bytes</th><th>Modified</th><th>Action</th></tr></thead><tbody>${rows}</tbody></table>${previews}`;
 }
 function outputTable(outputs) {
   currentOutputs = outputs || [];
@@ -375,7 +548,9 @@ async function refresh() {
   const details = await detailResp.json();
   const job = (status.jobs || []).find(j => j.event === EVENT) || {};
   const detail = (details.events || {})[EVENT] || {};
-  document.getElementById("summary").innerHTML = table([row("event", EVENT), row("status", job.status), row("DAG cluster id", job.jobid || detail.dag_cluster_id), row("source", job.source), row("runtime", job.runtime), row("remote host", job.remote_host), row("requested CPUs", job.request_cpus), row("requested memory MB", job.request_memory_mb), row("disk / RSS", `${fmt(job.disk_usage)} / ${fmt(job.rss_kb)}`), row("live output products", job.output_count), row("detail generated", detail.generated_at ? new Date(detail.generated_at * 1000).toLocaleString() : null), row("live child jobs", detail.live_jobs_count), row("history child jobs", detail.history_jobs_count), row("note", job.note || detail.note)]);
+  document.getElementById("summary").innerHTML = table([row("event", EVENT), row("status", job.status), row("DAG cluster id", job.jobid || detail.dag_cluster_id), row("source", job.source), row("runtime", job.runtime), row("remote host", job.remote_host), row("requested CPUs", job.request_cpus), row("requested memory MB", job.request_memory_mb), row("disk / RSS", `${fmt(job.disk_usage)} / ${fmt(job.rss_kb)}`), row("configuration INIs", job.config_count), row("live output products", job.output_count), row("detail generated", detail.generated_at ? new Date(detail.generated_at * 1000).toLocaleString() : null), row("live child jobs", detail.live_jobs_count), row("history child jobs", detail.history_jobs_count), row("note", job.note || detail.note)]);
+  document.getElementById("configs").innerHTML = configTable(job.configs || []);
+  loadConfigPreviews(job.configs || []);
   document.getElementById("outputs").innerHTML = outputTable(job.outputs || []);
   loadPreviews(job.outputs || []);
   document.getElementById("jobs").innerHTML = jobTable(detail.jobs || []);
