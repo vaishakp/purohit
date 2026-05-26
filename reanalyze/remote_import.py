@@ -56,7 +56,7 @@ def run_checked(command: list[str], *, input_text: str | None = None) -> subproc
 def sha256_file(path: Path) -> str:
     h = hashlib.sha256()
     with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+        for chunk in iter(lambda: handle.read(1024 * 1024), b=""):
             h.update(chunk)
     return h.hexdigest()
 
@@ -84,6 +84,7 @@ from pathlib import Path
 source_dir = Path(sys.argv[1]).expanduser()
 apx = sys.argv[2].lower()
 events = set(item for item in sys.argv[3].split(',') if item) if len(sys.argv) > 3 else set()
+approvals = json.loads(sys.argv[4]) if len(sys.argv) > 4 and sys.argv[4] else {}
 files = []
 for path in source_dir.rglob('*.ini'):
     if apx and apx not in path.name.lower():
@@ -96,15 +97,24 @@ for path in source_dir.rglob('*.ini'):
     if events and event not in events:
         continue
     files.append((event, str(path)))
-selected = {}
+
+grouped = {}
 for event, path in sorted(files):
-    selected.setdefault(event, path)
+    grouped.setdefault(event, []).append(path)
+selected = {}
+for event, event_files in sorted(grouped.items()):
+    if event in approvals:
+        token = str(approvals[event])
+        matches = [path for path in event_files if token in path]
+        selected[event] = matches[0] if matches else event_files[-1]
+    else:
+        selected[event] = event_files[0]
 print(json.dumps({'source_dir': str(source_dir), 'events': {event: {'source_ini': path} for event, path in selected.items()}}, sort_keys=True))
 '''
 
 
-def discover_remote_configs(source_host: HostProfile, source_dir: str, apx: str, events: list[str] | None = None) -> dict[str, Any]:
-    stdout = run_remote_python(source_host, REMOTE_DISCOVERY_CODE, [source_dir, apx, ",".join(events or [])])
+def discover_remote_configs(source_host: HostProfile, source_dir: str, apx: str, events: list[str] | None = None, approvals: dict[str, str] | None = None) -> dict[str, Any]:
+    stdout = run_remote_python(source_host, REMOTE_DISCOVERY_CODE, [source_dir, apx, ",".join(events or []), json.dumps(approvals or {})])
     return json.loads(stdout)
 
 
@@ -250,6 +260,7 @@ def import_events(
     target_project_dir: Path | None,
     apx: str,
     events: list[str] | None = None,
+    approvals: dict[str, str] | None = None,
     data_subdir: str = "data",
     submit_suffix: str = ".target.ini",
     preserve_roots: list[str] | None = None,
@@ -259,7 +270,7 @@ def import_events(
     source_host = profiles[source_host_name]
     target_host = profiles[target_host_name]
     target_project = target_project_dir or target_host.require_project_dir()
-    discovery = discover_remote_configs(source_host, source_dir, apx, events=events)
+    discovery = discover_remote_configs(source_host, source_dir, apx, events=events, approvals=approvals)
     results = []
     for event, info in sorted(discovery.get("events", {}).items()):
         result = materialize_event(
@@ -280,7 +291,7 @@ def import_events(
             "manifest_path": str(result.manifest_path),
             "dependency_count": len(result.dependencies),
         })
-    summary = {"generated_at": time.time(), "source_host": source_host_name, "target_host": target_host_name, "source_dir": source_dir, "target_project_dir": str(target_project), "events": results}
+    summary = {"generated_at": time.time(), "source_host": source_host_name, "target_host": target_host_name, "source_dir": source_dir, "target_project_dir": str(target_project), "approval_events": sorted((approvals or {}).keys()), "events": results}
     imports_dir = target_project / "control" / "imports"
     imports_dir.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y%m%d-%H%M%S")
