@@ -1,4 +1,4 @@
-name: purohit
+name: pur
 channels:
   - conda-forge
 dependencies:
