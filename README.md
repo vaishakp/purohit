@@ -1,10 +1,56 @@
 # purohit
 
-Utilities for preparing, submitting, and monitoring `bilby_pipe` reruns.
+Utilities for preparing, submitting, and monitoring `bilby_pipe` and `pyRing` Runs.
 
 Purohit is designed for a shared gravitational-wave rerun project where one or
-more submit hosts prepare event working directories, submit HTCondor DAGs through
-`bilby_pipe`, and publish a lightweight browser control panel.
+more submit hosts prepare event working directories, submit HTCondor DAGs  and publish a lightweight browser control panel.
+
+
+
+## Installation
+
+First, create a conda env
+
+
+## Catalog re-analysis and Bilby PE jobs 
+
+export REPO=/path/to/the/cloned/repo
+
+1. Setup the environment.
+
+```cd $REPO```
+
+We suggest using conda:
+
+```conda env create -f conda-environment.yml```
+
+``` conda activate pur```
+
+
+
+this will create and activate new env called `pur`
+
+
+2. Install purohit
+
+   ```pip install -e .```
+
+3. Initialize env variables
+
+Copy the script in ```$REPO/scripts/init_env.sh``` to a location outside $REPO, change it accordingly, and source it:
+
+```source scripts/init_env.sh```
+
+
+4. Initialize the project
+
+   A project initialization involves copying inis from the source dir to destination project dir.
+
+   If the source is not CIT, then this initiates rsync.
+
+   ``` bash scripts/init_project.sh```
+
+5. Start the monitor
 
 ## What Purohit does
 
