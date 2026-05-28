@@ -1,0 +1,14 @@
+hosts:
+  cit:
+    ssh: $USER@citlogin5.ligo.caltech.edu
+    home: /home/$USER
+    hostname_contains:
+      - ligo.caltech.edu
+        #      - cit
+
+  gwave:
+    ssh: $USER@ligo01.gwave.ics.psu.edu
+    home: $HOME
+    project_dir: $HOME/Projects/gwtc5_purohit
+    hostname_contains:
+      - gwave

@@ -3,11 +3,29 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from pathlib import Path
 import socket
 from typing import Any
 
 import yaml
+
+
+def expand_profile_value(value: Any) -> str:
+    """Expand shell-like environment variables and ``~`` in YAML strings.
+
+    The expansion is performed on the machine reading ``hosts.yaml``.  This is
+    convenient for target-local paths such as ``$HOME/project`` and SSH strings
+    such as ``$USER@host``, but source-host paths should still be written as
+    explicit remote paths unless the same environment variables are deliberately
+    set on the target machine.
+    """
+
+    return os.path.expandvars(os.path.expanduser(str(value)))
+
+
+def expand_path(value: Any) -> Path:
+    return Path(expand_profile_value(value))
 
 
 @dataclass(frozen=True)
@@ -26,9 +44,9 @@ class HostProfile:
     def from_mapping(cls, name: str, data: dict[str, Any]) -> "HostProfile":
         return cls(
             name=name,
-            ssh=data.get("ssh"),
-            home=Path(data["home"]).expanduser() if data.get("home") else None,
-            project_dir=Path(data["project_dir"]).expanduser() if data.get("project_dir") else None,
+            ssh=expand_profile_value(data["ssh"]) if data.get("ssh") else None,
+            home=expand_path(data["home"]) if data.get("home") else None,
+            project_dir=expand_path(data["project_dir"]) if data.get("project_dir") else None,
             scheduler=str(data.get("scheduler", "condor")),
             hostname_contains=tuple(str(item).lower() for item in data.get("hostname_contains", []) or []),
             metadata={key: value for key, value in data.items() if key not in {"ssh", "home", "project_dir", "scheduler", "hostname_contains"}},

@@ -1,0 +1,5 @@
+from reanalyze.project_init import main
+
+
+if __name__ == "__main__":
+    main()
