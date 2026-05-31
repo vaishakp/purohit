@@ -188,8 +188,14 @@ def main() -> None:
     server.state = state  # type: ignore[attr-defined]
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    print(f"Purohit web app listening on http://{args.host}:{args.port}")
-    print(f"Static files are served from {webdir}; /api/* endpoints require the token.")
+    print(f"Purohit web app listening on http://{args.host}:{args.port}", flush=True)
+    print(f"Static files are served from {webdir}; /api/* endpoints require the token.", flush=True)
+    if args.token_file is None:
+        print("Token file: <none configured>; /api/* endpoints will accept requests without a token.", flush=True)
+    else:
+        token_file = args.token_file.expanduser().resolve()
+        status = "exists" if token_file.is_file() else "missing"
+        print(f"Token file: {token_file} ({status}). Paste this file's contents into login.html.", flush=True)
     try:
         manager_loop(state, args)
     finally:
