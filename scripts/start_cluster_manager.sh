@@ -4,17 +4,23 @@ set -euo pipefail
 # Start/stop/status the Purohit tunnel/static manager for one cluster-local
 # project. All paths and tunables come from scripts/init_env.sh unless already
 # set in the environment.
+#
+# This script intentionally launches the manager directly with the current
+# process environment. Do not use `bash -lc` here: login shells can reset PATH
+# and drop the active conda/IGWN environment, causing tools such as bilby_pipe
+# to disappear from the manager health checks.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/init_env.sh"
 
 ACTION="${1:-start}"
+PYTHON_BIN="${PYTHON:-python}"
 
 mkdir -p "${PROJECT_DIR}/control" "${WEBDIR}"
 
 ensure_token() {
     if [[ ! -s "${TOKEN_FILE}" ]]; then
-        python - <<PY
+        "${PYTHON_BIN}" - <<PY
 from pathlib import Path
 import secrets
 path = Path("${TOKEN_FILE}")
@@ -34,18 +40,6 @@ is_running() {
     kill -0 "${pid}" 2>/dev/null
 }
 
-manager_command() {
-    python "${PUROHIT_REPO}/scripts/run_tunnel_manager.py" \
-        --project-dir "${PROJECT_DIR}" \
-        --webdir "${WEBDIR}" \
-        --host "${HOST}" \
-        --port "${PORT}" \
-        --token-file "${TOKEN_FILE}" \
-        --interval "${INTERVAL}" \
-        --plot-interval "${PLOT_INTERVAL}" \
-        --env-mode "${ENV_MODE}"
-}
-
 case "${ACTION}" in
     start)
         ensure_token
@@ -62,7 +56,18 @@ case "${ACTION}" in
         echo "[purohit-manager] webdir=${WEBDIR}"
         echo "[purohit-manager] token_file=${TOKEN_FILE}"
         echo "[purohit-manager] log=${LOGFILE}"
-        nohup bash -lc "$(declare -f manager_command); manager_command" >"${LOGFILE}" 2>&1 &
+        echo "[purohit-manager] python=$(command -v "${PYTHON_BIN}" || echo "${PYTHON_BIN}")"
+        echo "[purohit-manager] bilby_pipe=$(command -v bilby_pipe || true)"
+        nohup "${PYTHON_BIN}" "${PUROHIT_REPO}/scripts/run_tunnel_manager.py" \
+            --project-dir "${PROJECT_DIR}" \
+            --webdir "${WEBDIR}" \
+            --host "${HOST}" \
+            --port "${PORT}" \
+            --token-file "${TOKEN_FILE}" \
+            --interval "${INTERVAL}" \
+            --plot-interval "${PLOT_INTERVAL}" \
+            --env-mode "${ENV_MODE}" \
+            >"${LOGFILE}" 2>&1 &
         echo $! > "${PIDFILE}"
         sleep 1
         if is_running; then
