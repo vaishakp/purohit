@@ -18,6 +18,22 @@ PYTHON_BIN="${PYTHON:-python}"
 
 mkdir -p "${PROJECT_DIR}/control" "${WEBDIR}"
 
+resolve_executable() {
+    local exe="$1"
+    if command -v "$exe" >/dev/null 2>&1; then
+        command -v "$exe"
+    else
+        echo "$exe"
+    fi
+}
+
+running_python() {
+    local pid="$1"
+    if [[ -r "/proc/${pid}/exe" ]]; then
+        readlink -f "/proc/${pid}/exe" 2>/dev/null || true
+    fi
+}
+
 ensure_token() {
     if [[ ! -s "${TOKEN_FILE}" ]]; then
         "${PYTHON_BIN}" - <<PY
@@ -40,15 +56,42 @@ is_running() {
     kill -0 "${pid}" 2>/dev/null
 }
 
+remove_stale_pidfile() {
+    if [[ -f "${PIDFILE}" ]] && ! is_running; then
+        echo "[purohit-manager] removing stale pidfile=${PIDFILE}"
+        rm -f "${PIDFILE}"
+    fi
+}
+
+print_running_status() {
+    local pid
+    pid="$(cat "${PIDFILE}")"
+    echo "[purohit-manager] running pid=${pid}"
+    echo "[purohit-manager] url=http://${HOST}:${PORT}/tunnel.html"
+    echo "[purohit-manager] project_dir=${PROJECT_DIR}"
+    echo "[purohit-manager] webdir=${WEBDIR}"
+    echo "[purohit-manager] token_file=${TOKEN_FILE}"
+    echo "[purohit-manager] log=${LOGFILE}"
+    local actual_python
+    actual_python="$(running_python "${pid}")"
+    if [[ -n "${actual_python}" ]]; then
+        echo "[purohit-manager] running_python=${actual_python}"
+    fi
+}
+
 case "${ACTION}" in
     start)
+        remove_stale_pidfile
         ensure_token
         if is_running; then
-            echo "[purohit-manager] already running pid=$(cat "${PIDFILE}")"
-            echo "[purohit-manager] url=http://${HOST}:${PORT}/tunnel.html"
-            echo "[purohit-manager] project_dir=${PROJECT_DIR}"
-            echo "[purohit-manager] webdir=${WEBDIR}"
-            echo "[purohit-manager] token_file=${TOKEN_FILE}"
+            print_running_status
+            desired_python="$(resolve_executable "${PYTHON_BIN}")"
+            actual_python="$(running_python "$(cat "${PIDFILE}")")"
+            if [[ -n "${actual_python}" && "${actual_python}" != "$(readlink -f "${desired_python}" 2>/dev/null || echo "${desired_python}")" ]]; then
+                echo "[purohit-manager] WARNING: manager is already running under a different Python."
+                echo "[purohit-manager] desired_python=${desired_python}"
+                echo "[purohit-manager] run: ${BASH_SOURCE[0]} restart"
+            fi
             exit 0
         fi
         echo "[purohit-manager] starting tunnel/static manager"
@@ -56,7 +99,7 @@ case "${ACTION}" in
         echo "[purohit-manager] webdir=${WEBDIR}"
         echo "[purohit-manager] token_file=${TOKEN_FILE}"
         echo "[purohit-manager] log=${LOGFILE}"
-        echo "[purohit-manager] python=$(command -v "${PYTHON_BIN}" || echo "${PYTHON_BIN}")"
+        echo "[purohit-manager] python=$(resolve_executable "${PYTHON_BIN}")"
         echo "[purohit-manager] bilby_pipe=$(command -v bilby_pipe || true)"
         nohup "${PYTHON_BIN}" "${PUROHIT_REPO}/scripts/run_tunnel_manager.py" \
             --project-dir "${PROJECT_DIR}" \
@@ -85,18 +128,15 @@ case "${ACTION}" in
             kill "$(cat "${PIDFILE}")" || true
             rm -f "${PIDFILE}"
         else
+            remove_stale_pidfile
             echo "[purohit-manager] not running"
         fi
         ;;
     status)
         if is_running; then
-            echo "[purohit-manager] running pid=$(cat "${PIDFILE}")"
-            echo "[purohit-manager] url=http://${HOST}:${PORT}/tunnel.html"
-            echo "[purohit-manager] project_dir=${PROJECT_DIR}"
-            echo "[purohit-manager] webdir=${WEBDIR}"
-            echo "[purohit-manager] token_file=${TOKEN_FILE}"
-            echo "[purohit-manager] log=${LOGFILE}"
+            print_running_status
         else
+            remove_stale_pidfile
             echo "[purohit-manager] stopped"
             exit 1
         fi
