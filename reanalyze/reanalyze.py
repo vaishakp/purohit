@@ -303,9 +303,9 @@ class PERerun:
         config_path = Path(self.config_paths[event])
         outdir = config_path.parent / "pe"
         webdir = self.project_dir / "webdir"
-        analysis_executable = shutil.which("bilby_pipe_analysis")
+        analysis_executable = shutil.which("bilby_pipe")
         if analysis_executable is None:
-            raise FileNotFoundError("Could not find 'bilby_pipe_analysis' on PATH. Activate the intended bilby_pipe environment first.")
+            raise FileNotFoundError("Could not find 'bilby_pipe' on PATH. Activate the intended bilby_pipe environment first.")
 
         self._log(f"Event {event}: reconfiguring {config_path}")
         self._log(f"Event {event}: outdir={outdir}", level="DEBUG")
