@@ -208,6 +208,29 @@ def replace_paths(text: str, replacements: dict[str, str]) -> str:
     return out
 
 
+def set_ini_value(text: str, key: str, value: str) -> str:
+    pattern = re.compile(rf"^\s*{re.escape(key)}\s*=.*$", re.MULTILINE)
+    replacement = f"{key}={value}"
+    if pattern.search(text):
+        return pattern.sub(replacement, text)
+    suffix = "" if text.endswith("\n") else "\n"
+    return f"{text}{suffix}{replacement}\n"
+
+
+def remove_ini_key(text: str, key: str) -> str:
+    pattern = re.compile(rf"^\s*{re.escape(key)}\s*=.*(?:\n|$)", re.MULTILINE)
+    return pattern.sub("", text)
+
+
+def localize_submit_ini_text(text: str, *, preserve_osg_settings: bool = False) -> str:
+    if preserve_osg_settings:
+        return text
+    localized = remove_ini_key(text, "container")
+    localized = set_ini_value(localized, "osg", "False")
+    localized = set_ini_value(localized, "transfer-files", "False")
+    return localized
+
+
 def materialize_event(
     *,
     event: str,
@@ -219,6 +242,7 @@ def materialize_event(
     data_subdir: str = "data",
     submit_suffix: str = ".target.ini",
     rsync_args: list[str] | None = None,
+    preserve_osg_settings: bool = False,
     verbose: bool = True,
 ) -> EventImportResult:
     event_dir = target_project_dir / "working" / event
@@ -253,6 +277,7 @@ def materialize_event(
     target_home = str(target_host.require_home()).rstrip("/")
     replacements[source_home + "/"] = target_home + "/"
     rewritten = replace_paths(ini_text, replacements)
+    rewritten = localize_submit_ini_text(rewritten, preserve_osg_settings=preserve_osg_settings)
 
     submit_ini = event_dir / (Path(source_ini).stem + submit_suffix)
     submit_ini.parent.mkdir(parents=True, exist_ok=True)
@@ -272,6 +297,7 @@ def materialize_event(
         "data_subdir": data_subdir,
         "dependencies": copied,
         "path_replacements": replacements,
+        "preserve_osg_settings": preserve_osg_settings,
     }
     manifest_path = event_dir / "input_manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
@@ -288,6 +314,7 @@ def materialize_event(
         "original_ini": str(original_ini),
         "submit_ini": str(submit_ini),
         "input_manifest": str(manifest_path),
+        "preserve_osg_settings": preserve_osg_settings,
     })
     status_path.write_text(yaml.safe_dump(status, sort_keys=False))
     _log(f"{event}: wrote submit INI {submit_ini} and manifest {manifest_path}", verbose=verbose)
@@ -308,6 +335,7 @@ def import_events(
     submit_suffix: str = ".target.ini",
     preserve_roots: list[str] | None = None,
     rsync_args: list[str] | None = None,
+    preserve_osg_settings: bool = False,
     verbose: bool = True,
 ) -> dict[str, Any]:
     profiles = HostProfiles.load(hosts_file)
@@ -335,6 +363,7 @@ def import_events(
             data_subdir=data_subdir,
             submit_suffix=submit_suffix,
             rsync_args=rsync_args,
+            preserve_osg_settings=preserve_osg_settings,
             verbose=verbose,
         )
         results.append({
@@ -344,7 +373,16 @@ def import_events(
             "manifest_path": str(result.manifest_path),
             "dependency_count": len(result.dependencies),
         })
-    summary = {"generated_at": time.time(), "source_host": source_host_name, "target_host": target_host_name, "source_dir": source_dir, "target_project_dir": str(target_project), "approval_events": sorted((approvals or {}).keys()), "events": results}
+    summary = {
+        "generated_at": time.time(),
+        "source_host": source_host_name,
+        "target_host": target_host_name,
+        "source_dir": source_dir,
+        "target_project_dir": str(target_project),
+        "approval_events": sorted((approvals or {}).keys()),
+        "preserve_osg_settings": preserve_osg_settings,
+        "events": results,
+    }
     imports_dir = target_project / "control" / "imports"
     imports_dir.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y%m%d-%H%M%S")
