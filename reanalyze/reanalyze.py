@@ -322,6 +322,24 @@ class PERerun:
             removed_keys = ", ".join(sorted(set(removed)))
             self._log(f"Removed source INI setting(s) from {path}: {removed_keys}", level="DEBUG")
 
+    def _active_conda_env_name(self):
+        """Return the active Conda-compatible environment name, if one is visible.
+
+        Prefer ``CONDA_DEFAULT_ENV`` because it is the user-facing environment
+        name. Fall back to the basename of ``CONDA_PREFIX`` for shells that only
+        expose the resolved environment prefix. If neither is available, return
+        ``None`` so copied source ``conda-env`` entries can be removed instead
+        of pointing at a stale production environment.
+        """
+
+        env_name = os.environ.get("CONDA_DEFAULT_ENV")
+        if env_name:
+            return env_name
+        conda_prefix = os.environ.get("CONDA_PREFIX")
+        if conda_prefix:
+            return Path(conda_prefix).name
+        return None
+
     def reconfigure_one_ini(self, event):
         """Edit one copied project-local bilby_pipe INI for resubmission."""
 
@@ -331,10 +349,16 @@ class PERerun:
         analysis_executable = shutil.which("bilby_pipe")
         if analysis_executable is None:
             raise FileNotFoundError("Could not find 'bilby_pipe' on PATH. Activate the intended bilby_pipe environment first.")
+        conda_env = self._active_conda_env_name()
 
         self._log(f"Event {event}: reconfiguring {config_path}")
         self._log(f"Event {event}: outdir={outdir}", level="DEBUG")
         self._log(f"Event {event}: webdir={webdir}", level="DEBUG")
+        self._log(f"Event {event}: analysis-executable={analysis_executable}", level="DEBUG")
+        if conda_env:
+            self._log(f"Event {event}: conda-env={conda_env}", level="DEBUG")
+        else:
+            self._log(f"Event {event}: no active conda-env detected; removing copied conda-env key", level="DEBUG")
         if self.accounting is not None:
             self._log(f"Event {event}: accounting={self.accounting}", level="DEBUG")
         if self.accounting_user is not None:
@@ -349,16 +373,20 @@ class PERerun:
             "request-memory": "8",
             "request-disk": "16",
             "analysis-executable": analysis_executable,
+            "conda-env": conda_env,
             "submit": "condor",
             "sampler-kwargs": "{'nlive': 2000, 'naccept': 60, 'check_point_plot': True, 'check_point_delta_t': 1800, 'print_method': 'interval-60', 'sample': 'acceptance-walk', 'npool': 16, 'dlogz': 0.01}",
         }
         if not self.preserve_osg_settings:
-            updates.update({"osg": "False", "transfer-files": "False"})
+            updates.update({"osg": "False", "transfer-files": "False", "scheduler-env": "None"})
         if self.apx == "NRSur7dq4":
             updates["additional-transfer-paths"] = "[/scratch/lalsimulation/NRSur7dq4_v1.0.h5]"
         self._set_ini_values(config_path, updates)
+        keys_to_remove = [] if conda_env else ["conda-env"]
         if not self.preserve_osg_settings:
-            self._remove_ini_values(config_path, ["container"])
+            keys_to_remove.append("container")
+        self._remove_ini_values(config_path, keys_to_remove)
+        if not self.preserve_osg_settings:
             self._log(
                 f"Event {event}: localized INI by disabling OSG/container transfer settings",
                 level="DEBUG",
