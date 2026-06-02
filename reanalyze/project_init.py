@@ -100,6 +100,7 @@ def init_project(
     approvals: dict[str, str] | None = None,
     overwrite_configs: bool = False,
     reconfigure_existing_configs: bool = True,
+    preserve_osg_settings: bool = False,
     accounting: str | None = "ligo.dev.o4.cbc.pe.bilby",
     accounting_user: str = "auto",
     label_suffix: str = "_p2",
@@ -150,7 +151,8 @@ def init_project(
     )
     _log(
         f"source_dir={source_dir} apx={apx} approvals={len(approvals)} "
-        f"events_requested={len(events or []) if events else 'all'}",
+        f"events_requested={len(events or []) if events else 'all'} "
+        f"preserve_osg_settings={preserve_osg_settings}",
         verbose=verbose,
     )
 
@@ -165,9 +167,11 @@ def init_project(
         "apx": apx,
         "approval_events": sorted(approvals),
         "events_requested": events or [],
+        "preserve_osg_settings": preserve_osg_settings,
         "pererun_arguments": {
             "overwrite_configs": overwrite_configs,
             "reconfigure_existing_configs": reconfigure_existing_configs,
+            "preserve_osg_settings": preserve_osg_settings,
             "accounting": accounting,
             "accounting_user": accounting_user,
             "label_suffix": label_suffix,
@@ -188,6 +192,7 @@ def init_project(
             approvals=approvals,
             overwrite_configs=overwrite_configs,
             reconfigure_existing_configs=reconfigure_existing_configs,
+            preserve_osg_settings=preserve_osg_settings,
             accounting=accounting,
             accounting_user=accounting_user,
             label_suffix=label_suffix,
@@ -228,6 +233,7 @@ def init_project(
             submit_suffix=submit_suffix,
             preserve_roots=preserve_roots,
             rsync_args=rsync_args,
+            preserve_osg_settings=preserve_osg_settings,
             verbose=verbose and progress,
         )
         summary["events"] = remote_summary.get("events", [])
@@ -254,6 +260,7 @@ def init_project(
             "apx": apx,
             "approval_events": sorted(approvals),
             "mode": summary["mode"],
+            "preserve_osg_settings": preserve_osg_settings,
         },
     )
     summary["project_init_summary"] = str(init_summary_path)
@@ -281,6 +288,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--label-suffix", default="_p2")
     parser.add_argument("--overwrite-configs", action="store_true")
     parser.add_argument("--no-reconfigure-existing-configs", action="store_true")
+    parser.add_argument("--preserve-osg-settings", action="store_true", help="Keep source OSG/container settings instead of localizing submit INIs.")
     parser.add_argument("--no-cache-config-discovery", action="store_true")
     parser.add_argument("--refresh-config-cache", action="store_true")
     parser.add_argument("--config-cache-file", type=Path, default=None)
@@ -316,6 +324,7 @@ def main() -> None:
         label_suffix=args.label_suffix,
         overwrite_configs=args.overwrite_configs,
         reconfigure_existing_configs=not args.no_reconfigure_existing_configs,
+        preserve_osg_settings=args.preserve_osg_settings,
         cache_config_discovery=not args.no_cache_config_discovery,
         refresh_config_cache=args.refresh_config_cache,
         config_cache_file=args.config_cache_file,
