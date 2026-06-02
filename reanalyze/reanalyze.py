@@ -32,6 +32,7 @@ class PERerun:
         approvals=None,
         overwrite_configs=False,
         reconfigure_existing_configs=True,
+        preserve_osg_settings=False,
         accounting="ligo.dev.o4.cbc.pe.bilby",
         accounting_user="auto",
         label_suffix="_p2",
@@ -48,6 +49,11 @@ class PERerun:
         ``source_dir``. Internally the source tree is always named
         ``source_dir`` to avoid confusing it with the writable project output
         directory.
+
+        By default, copied INIs are localized for the current submit host by
+        disabling OSG/container transfer settings inherited from production
+        configs. Set ``preserve_osg_settings=True`` to keep those source
+        settings unchanged.
         """
 
         if source_dir is None:
@@ -65,6 +71,7 @@ class PERerun:
         self.approvals = approvals or {}
         self.overwrite_configs = overwrite_configs
         self.reconfigure_existing_configs = reconfigure_existing_configs
+        self.preserve_osg_settings = preserve_osg_settings
         self.accounting = accounting
         self.accounting_user = getpass.getuser() if accounting_user == "auto" else accounting_user
         self.label_suffix = label_suffix
@@ -87,6 +94,7 @@ class PERerun:
 
         self._log(f"Source directory: {self.source_dir}", level="DEBUG")
         self._log(f"Approximant/config token: {self.apx}", level="DEBUG")
+        self._log(f"Preserve OSG/container settings: {self.preserve_osg_settings}", level="DEBUG")
         if self.cache_config_discovery:
             self._log(f"Config discovery cache: {self.config_cache_file}", level="DEBUG")
 
@@ -297,6 +305,23 @@ class PERerun:
                 new_lines.append(f"{key}={value}")
         path.write_text("\n".join(new_lines) + "\n")
 
+    def _remove_ini_values(self, config_path, keys):
+        path = Path(config_path)
+        lines = path.read_text().splitlines()
+        patterns = {key: re.compile(rf"^\s*{re.escape(key)}\s*=") for key in keys}
+        removed = []
+        new_lines = []
+        for line in lines:
+            matched_key = next((key for key, pattern in patterns.items() if pattern.match(line)), None)
+            if matched_key is None:
+                new_lines.append(line)
+            else:
+                removed.append(matched_key)
+        if removed:
+            path.write_text("\n".join(new_lines) + "\n")
+            removed_keys = ", ".join(sorted(set(removed)))
+            self._log(f"Removed source INI setting(s) from {path}: {removed_keys}", level="DEBUG")
+
     def reconfigure_one_ini(self, event):
         """Edit one copied project-local bilby_pipe INI for resubmission."""
 
@@ -327,9 +352,17 @@ class PERerun:
             "submit": "condor",
             "sampler-kwargs": "{'nlive': 2000, 'naccept': 60, 'check_point_plot': True, 'check_point_delta_t': 1800, 'print_method': 'interval-60', 'sample': 'acceptance-walk', 'npool': 16, 'dlogz': 0.01}",
         }
+        if not self.preserve_osg_settings:
+            updates.update({"osg": "False", "transfer-files": "False"})
         if self.apx == "NRSur7dq4":
             updates["additional-transfer-paths"] = "[/scratch/lalsimulation/NRSur7dq4_v1.0.h5]"
         self._set_ini_values(config_path, updates)
+        if not self.preserve_osg_settings:
+            self._remove_ini_values(config_path, ["container"])
+            self._log(
+                f"Event {event}: localized INI by disabling OSG/container transfer settings",
+                level="DEBUG",
+            )
 
         text = config_path.read_text()
         text = re.sub(
