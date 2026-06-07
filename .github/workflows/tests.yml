@@ -1,6 +1,7 @@
 name: Tests
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - master
@@ -29,8 +30,14 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements-test.txt
 
+      - name: Compile package and tests
+        env:
+          PYTHONPATH: .
+        run: |
+          python -m compileall -q reanalyze tests
+
       - name: Run tests
         env:
           PYTHONPATH: .
         run: |
-          pytest -q
+          python -m pytest -q
