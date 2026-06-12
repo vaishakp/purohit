@@ -12,6 +12,7 @@ from reanalyze.remote_import import (
     event_data_path,
     home_relative_path,
     parse_ini_dependencies_text,
+    split_dependency_candidates,
 )
 from reanalyze.static_manager import find_event_config
 
@@ -38,6 +39,40 @@ not_a_path = hello
     assert deps[0].source_path == "/home/source/psd/H1.dat"
     assert deps[0].ini_path == "/home/source/psd/H1.dat"
     assert deps[0].kind == "psd"
+
+
+def test_split_dependency_candidates_expands_detector_path_map():
+    value = (
+        "H1:/home/pe.o4/GWTC5-HLV/project/working/S240413p/get-calibration-ligo-L1/calibration/H1.txt,"
+        "L1:/home/pe.o4/GWTC5-HLV/project/working/S240413p/get-calibration-ligo-L1/calibration/L1.txt,"
+        "V1:/home/pe.o4/GWTC5-HLV/project/working/S240413p/get-calibration-virgo/calibration/V1.txt,"
+    )
+
+    assert split_dependency_candidates(value) == [
+        "/home/pe.o4/GWTC5-HLV/project/working/S240413p/get-calibration-ligo-L1/calibration/H1.txt",
+        "/home/pe.o4/GWTC5-HLV/project/working/S240413p/get-calibration-ligo-L1/calibration/L1.txt",
+        "/home/pe.o4/GWTC5-HLV/project/working/S240413p/get-calibration-virgo/calibration/V1.txt",
+    ]
+
+
+def test_parse_ini_dependencies_expands_calibration_detector_path_map():
+    text = """
+calibration_model = H1:/home/source/calibration/H1.txt,L1:/home/source/calibration/L1.txt,V1:/home/source/calibration/V1.txt,
+"""
+
+    deps = parse_ini_dependencies_text(text)
+
+    assert [dep.source_path for dep in deps] == [
+        "/home/source/calibration/H1.txt",
+        "/home/source/calibration/L1.txt",
+        "/home/source/calibration/V1.txt",
+    ]
+    assert [dep.ini_path for dep in deps] == [
+        "/home/source/calibration/H1.txt",
+        "/home/source/calibration/L1.txt",
+        "/home/source/calibration/V1.txt",
+    ]
+    assert {dep.kind for dep in deps} == {"calibration"}
 
 
 def test_remote_materialize_copies_data_files_and_reconfigures_target_ini(tmp_path, monkeypatch):

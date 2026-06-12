@@ -175,7 +175,7 @@ def parse_ini_dependencies_text(
         key = key.strip()
         if not any(hint in key.lower() for hint in path_key_hints):
             continue
-        for candidate in split_pathlike_value(value.strip()):
+        for candidate in split_dependency_candidates(value.strip()):
             ini_path = candidate.strip()
             expanded = os.path.expandvars(os.path.expanduser(ini_path))
             if not is_probable_path(expanded) and not (base_dir and is_probable_relative_file(expanded)):
@@ -191,6 +191,33 @@ def parse_ini_dependencies_text(
             kind = classify_dependency_key(key)
             deps.append(Dependency(key=key, source_path=source_path, ini_path=ini_path, kind=kind))
     return deps
+
+
+def split_dependency_candidates(value: str) -> list[str]:
+    candidates: list[str] = []
+    for candidate in split_pathlike_value(value):
+        candidates.extend(split_detector_path_map(candidate))
+    return candidates
+
+
+def split_detector_path_map(value: str) -> list[str]:
+    stripped = value.strip()
+    if "," not in stripped or ":" not in stripped:
+        return [value]
+
+    paths: list[str] = []
+    for item in stripped.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        detector, sep, path = item.partition(":")
+        if not sep or not detector.strip() or not path.strip():
+            return [value]
+        detector_name = detector.strip()
+        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", detector_name):
+            return [value]
+        paths.append(path.strip())
+    return paths or [value]
 
 
 def classify_dependency_key(key: str) -> str:
