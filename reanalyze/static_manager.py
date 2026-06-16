@@ -19,10 +19,11 @@ from typing import Any
 
 import yaml
 
+from reanalyze.assignments import assign_event, check_assignment, current_operator, unassign_event
 from reanalyze.input_staging import stage_bilby_inputs
 from reanalyze.static_monitor import publish_once
 
-SUPPORTED_ACTIONS = {"submit_event", "hold_event", "release_event", "remove_event", "reset_event", "refresh"}
+SUPPORTED_ACTIONS = {"submit_event", "hold_event", "release_event", "remove_event", "reset_event", "refresh", "assign_event", "unassign_event"}
 RESETTABLE_OUTPUT_DIRS = ("pe",)
 RESETTABLE_PATTERNS = (
     "*.dag.*",
@@ -322,6 +323,13 @@ def reset_event(project_dir: Path, event: str) -> dict[str, Any]:
     }
 
 
+def _assignment_context(project_dir: Path, event: str, action: str, command: dict[str, Any]) -> dict[str, Any] | None:
+    decision = check_assignment(project_dir, event, str(action), command)
+    if decision.allowed:
+        return {"operator": decision.operator, "assignee": decision.assignee, "assignment_reason": decision.reason}
+    return {"ok": False, "event": event, "action": action, "operator": decision.operator, "assignee": decision.assignee, "message": f"assignment denied: {decision.reason}", "command": command}
+
+
 def process_command(project_dir: Path, command: dict[str, Any]) -> dict[str, Any]:
     action = command.get("action")
     event = command.get("event")
@@ -331,6 +339,21 @@ def process_command(project_dir: Path, command: dict[str, Any]) -> dict[str, Any
         return {"ok": True, "command": command, "message": "refresh requested"}
     if not isinstance(event, str) or not event:
         return {"ok": False, "command": command, "message": "event is required"}
+
+    if action == "assign_event":
+        operator = current_operator(command)
+        result = assign_event(project_dir, event, operator or "", force=bool(command.get("force")), note=command.get("note"))
+        result["command"] = command
+        return result
+    if action == "unassign_event":
+        operator = current_operator(command)
+        result = unassign_event(project_dir, event, operator, force=bool(command.get("force")))
+        result["command"] = command
+        return result
+
+    assignment = _assignment_context(project_dir, event, str(action), command)
+    if assignment and assignment.get("ok") is False:
+        return assignment
     try:
         if action == "submit_event":
             result = submit_event(project_dir, event)
@@ -348,6 +371,8 @@ def process_command(project_dir: Path, command: dict[str, Any]) -> dict[str, Any
         result = called_process_error_result(exc, event=event, action=action)
     except Exception as exc:  # noqa: BLE001 - operational command audit should record failures
         result = {"ok": False, "event": event, "action": action, "message": str(exc)}
+    if assignment:
+        result.update(assignment)
     result["command"] = command
     return result
 
