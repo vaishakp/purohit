@@ -305,7 +305,7 @@ def reconfigure_submit_ini_text(
     label_suffix: str = "_p2",
     preserve_osg_settings: bool = False,
 ) -> str:
-    analysis_executable = shutil.which("bilby_pipe")
+    analysis_executable = shutil.which("bilby_pipe_analysis")
     if analysis_executable is None:
         raise FileNotFoundError("Could not find 'bilby_pipe' on PATH. Activate the intended bilby_pipe environment first.")
 
@@ -319,9 +319,13 @@ def reconfigure_submit_ini_text(
         "accounting-user": resolved_accounting_user,
         "request-memory": "8",
         "request-disk": "16",
+        "request-cpus": "16",
         "analysis-executable": analysis_executable,
-        "conda-env": conda_env,
-        "submit": "condor",
+        "conda-env": "None",
+        "submit": "False",
+        "queue": "None",
+        "transfer-files": "True",
+        "scitoken-issuer": "igwn",
         "sampler-kwargs": "{'nlive': 2000, 'naccept': 60, 'check_point_plot': True, 'check_point_delta_t': 1800, 'print_method': 'interval-60', 'sample': 'acceptance-walk', 'npool': 16, 'dlogz': 0.01}",
     }
     if not preserve_osg_settings:
