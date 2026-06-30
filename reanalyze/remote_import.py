@@ -176,9 +176,9 @@ def parse_ini_dependencies_text(
         if not any(hint in key.lower() for hint in path_key_hints):
             continue
         for candidate in split_dependency_candidates(value.strip()):
-            ini_path = candidate.strip()
+            ini_path = candidate.strip(",}{ ")
             expanded = os.path.expandvars(os.path.expanduser(ini_path))
-            if not is_probable_path(expanded) and not (base_dir and is_probable_relative_file(expanded)):
+            if not is_probable_path(expanded): # require / in candidate paths
                 continue
             if expanded.startswith("/"):
                 source_path = posixpath.normpath(expanded)
@@ -305,29 +305,36 @@ def reconfigure_submit_ini_text(
     label_suffix: str = "_p2",
     preserve_osg_settings: bool = False,
 ) -> str:
-    analysis_executable = shutil.which("bilby_pipe")
+    analysis_executable = shutil.which("bilby_pipe_analysis")
     if analysis_executable is None:
         raise FileNotFoundError("Could not find 'bilby_pipe' on PATH. Activate the intended bilby_pipe environment first.")
 
     conda_env = active_conda_env_name()
     resolved_accounting_user = getpass.getuser() if accounting_user == "auto" else accounting_user
+    outdir_path = str(submit_ini.resolve().parent / "pe").replace("/home/ligo/", "/scratch2/")
     updates = {
         "label": f"{event}{label_suffix}",
-        "outdir": str(submit_ini.parent / "pe"),
+        "outdir": outdir_path,
         "webdir": str(target_project_dir / "webdir"),
         "accounting": accounting,
         "accounting-user": resolved_accounting_user,
         "request-memory": "8",
         "request-disk": "16",
+        "request-cpus": "16",
         "analysis-executable": analysis_executable,
-        "conda-env": conda_env,
-        "submit": "condor",
+        "conda-env": "None",
+        "submit": "False",
+        "queue": "None",
+        "transfer-files": "True",
+        "scitoken-issuer": "igwn",
         "sampler-kwargs": "{'nlive': 2000, 'naccept': 60, 'check_point_plot': True, 'check_point_delta_t': 1800, 'print_method': 'interval-60', 'sample': 'acceptance-walk', 'npool': 16, 'dlogz': 0.01}",
     }
     if not preserve_osg_settings:
         updates.update({"osg": "False", "transfer-files": "False", "scheduler-env": "None"})
     if apx == "NRSur7dq4":
         updates["additional-transfer-paths"] = "[/scratch/lalsimulation/NRSur7dq4_v1.0.h5]"
+    if "data-dict=None" in text:
+        updates.update({"transfer-files": "True"})
 
     rewritten = text
     for key, value in updates.items():
